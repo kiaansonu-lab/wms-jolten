@@ -8,6 +8,7 @@ const {
   PackingTask,
   Customer,
   InventoryLog,
+  Company,
 } = require('../models');
 const { Op } = require('sequelize');
 

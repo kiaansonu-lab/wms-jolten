@@ -24,7 +24,7 @@ async function scanBarcode(req, res, next) {
   try {
     const rawBarcode = req.params.barcode;
     const sanitizedBarcode = rawBarcode ? String(rawBarcode).trim() : '';
-    
+
     console.log("[SCAN] Incoming Barcode:", rawBarcode, "-> Sanitized:", sanitizedBarcode);
 
     if (!sanitizedBarcode) {
@@ -37,15 +37,15 @@ async function scanBarcode(req, res, next) {
     }
 
     const data = await inventoryService.scanBarcode(req.user, sanitizedBarcode);
-    
+
     console.log("[SCAN] Success for:", sanitizedBarcode);
     res.json({ success: true, data });
   } catch (err) {
     console.error("[SCAN] Error for:", req.params.barcode, "->", err.message);
-    const isNotFound = 
-      err.message.toLowerCase().includes('not found') || 
+    const isNotFound =
+      err.message.toLowerCase().includes('not found') ||
       err.message === 'Invalid barcode';
-      
+
     if (isNotFound) {
       return res.status(404).json({ success: false, message: 'Barcode not found', barcode: req.params.barcode });
     }

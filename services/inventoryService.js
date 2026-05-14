@@ -124,10 +124,10 @@ async function scanBarcode(reqUser, barcode) {
         const normalizedFull = normalizeProductJson(fullProduct);
         // Robustly get quantity from various possible field names
         const qty = match.quantity ?? match.caseSize ?? match.unitsPerCarton ?? 1;
-        return { 
-          ...normalizedFull, 
-          type: 'carton', 
-          quantity: Math.max(1, Number(qty) || 1) 
+        return {
+          ...normalizedFull,
+          type: 'carton',
+          quantity: Math.max(1, Number(qty) || 1)
         };
       }
     }
@@ -307,7 +307,7 @@ async function createProduct(data, reqUser) {
     reorderQty: data.reorderQty != null ? data.reorderQty : null,
     maxStock: data.maxStock != null ? data.maxStock : null,
     status: data.status || 'ACTIVE',
-    images: (function() {
+    images: (function () {
       if (Array.isArray(data.images)) return data.images;
       if (typeof data.images === 'string' && data.images.trim()) {
         return data.images.split(',').map(u => u.trim()).filter(Boolean);
@@ -465,7 +465,7 @@ async function bulkCreateProducts(productsArray, reqUser) {
         reorderQty: data.reorderQty != null ? Number(data.reorderQty) : null,
         maxStock: data.maxStock != null ? Number(data.maxStock) : null,
         status: data.status && String(data.status).toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
-        images: (function() {
+        images: (function () {
           if (Array.isArray(data.images)) return data.images;
           if (typeof data.images === 'string' && data.images.trim()) {
             return data.images.split(',').map(u => u.trim()).filter(Boolean);
