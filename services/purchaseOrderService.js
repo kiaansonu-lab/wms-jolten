@@ -40,14 +40,38 @@ async function list(reqUser, query = {}) {
 }
 
 async function getById(id, reqUser) {
-  const po = await PurchaseOrder.findByPk(id);
+  const po = await PurchaseOrder.findByPk(id, {
+    include: [
+      { association: 'Supplier' },
+      { association: 'Client', attributes: ['id', 'name', 'header_image_url'] },
+      { association: 'Warehouse', attributes: ['id', 'name', 'code'] },
+      { 
+        association: 'PurchaseOrderItems', 
+        include: [
+          { 
+            model: Product, 
+            include: [{ association: 'ProductStocks', attributes: ['quantity'] }] 
+          }
+        ] 
+      },
+    ],
+  });
+
   if (!po) {
-    console.error(`[PO_CRITICAL] PO ID ${id} NOT FOUND AT ALL in DB`);
+    console.error(`[PO_CRITICAL] PO ID ${id} NOT FOUND in DB`);
     throw new Error('Purchase order not found');
   }
 
-  // Temporary bypass of ALL security checks to unblock PDF generation
-  console.log(`[PO_SUCCESS] PO ${id} found. Bypassing company check.`);
+  const poCompanyId = po.get ? po.get('companyId') : po.companyId;
+  const userCompanyId = reqUser.get ? reqUser.get('companyId') : reqUser.companyId;
+  const userRole = (reqUser.role || '').toLowerCase().replace(/-/g, '_');
+
+  if (userRole !== 'super_admin' && Number(poCompanyId) !== Number(userCompanyId)) {
+    console.warn(`[PO_GET] Access Denied: PO Company ${poCompanyId} vs User Company ${userCompanyId}`);
+    throw new Error('Purchase order not found');
+  }
+
+  if (reqUser.clientId && po.clientId !== reqUser.clientId) throw new Error('Not authorized to access this client data');
 
   const poJson = po.toJSON();
   poJson.PurchaseOrderItems = (poJson.PurchaseOrderItems || []).map(item => {
