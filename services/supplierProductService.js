@@ -286,7 +286,7 @@ async function listMappedProductsBySupplier(reqUser, supplierId, clientId = null
       mappingId: m.id,
       productId: m.Product?.id || m.productId,
       productName: m.supplierProductName || m.Product?.name,
-      productSku: m.supplierSku || m.Product?.sku,
+      productSku: m.supplierSku || '',
       internalSku: m.Product?.sku || null,
       suggestedQuantity: Number(m.Product?.reorderLevel || 1),
       costPrice: Number(m.costPrice || 0),

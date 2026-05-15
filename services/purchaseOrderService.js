@@ -24,10 +24,18 @@ async function list(reqUser, query = {}) {
       { association: 'Supplier', attributes: ['id', 'name', 'code'] },
       { association: 'Warehouse', attributes: ['id', 'name', 'code'], required: false },
       { association: 'Client', attributes: ['id', 'name'], required: false },
-      { association: 'PurchaseOrderItems', include: [{ association: 'Product', attributes: ['id', 'name', 'sku'] }] },
+      { association: 'PurchaseOrderItems', include: [{ model: Product, attributes: ['id', 'name', 'sku'], include: [{ association: 'ProductStocks', attributes: ['quantity'] }] }] },
     ],
   });
-  return pos;
+  
+  return pos.map(po => {
+    const poJson = po.toJSON();
+    poJson.PurchaseOrderItems = poJson.PurchaseOrderItems.map(item => {
+      const currentStock = (item.Product?.ProductStocks || []).reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
+      return { ...item, currentStock };
+    });
+    return poJson;
+  });
 }
 
 async function getById(id, reqUser) {
@@ -36,13 +44,28 @@ async function getById(id, reqUser) {
       { association: 'Supplier' },
       { association: 'Client', attributes: ['id', 'name', 'header_image_url'] },
       { association: 'Warehouse', attributes: ['id', 'name', 'code'] },
-      { association: 'PurchaseOrderItems', include: ['Product'] },
+      { 
+        association: 'PurchaseOrderItems', 
+        include: [
+          { 
+            model: Product, 
+            include: [{ association: 'ProductStocks', attributes: ['quantity'] }] 
+          }
+        ] 
+      },
     ],
   });
   if (!po) throw new Error('Purchase order not found');
   if (reqUser.role !== 'super_admin' && po.companyId !== reqUser.companyId) throw new Error('Purchase order not found');
   if (reqUser.clientId && po.clientId !== reqUser.clientId) throw new Error('Not authorized to access this client data');
-  return po;
+
+  const poJson = po.toJSON();
+  poJson.PurchaseOrderItems = poJson.PurchaseOrderItems.map(item => {
+    const currentStock = (item.Product?.ProductStocks || []).reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
+    return { ...item, currentStock };
+  });
+
+  return poJson;
 }
 
 async function create(body, reqUser) {
@@ -590,9 +613,8 @@ async function generatePoPdf(id, reqUser) {
   // --- TABLE HEADERS ---
   const tableTop = doc.y;
   doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#444444');
-  doc.text('Supplier SKU', 40, tableTop, { width: 65, lineBreak: false });
-  doc.text('Internal SKU', 105, tableTop, { width: 65, lineBreak: false });
-  doc.text('Product Name', 170, tableTop, { width: 105, lineBreak: false });
+  doc.text('SKU', 40, tableTop, { width: 120, lineBreak: false });
+  doc.text('Product Name', 165, tableTop, { width: 110, lineBreak: false });
   doc.text('Pack Size', 275, tableTop, { width: 45, align: 'center', lineBreak: false });
   doc.text('Ordered Cases', 325, tableTop, { width: 60, align: 'right', lineBreak: false });
   doc.text('Total Singles', 385, tableTop, { width: 60, align: 'right', lineBreak: false });
@@ -610,9 +632,8 @@ async function generatePoPdf(id, reqUser) {
       doc.addPage();
       // headers on new page
       doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#444444');
-      doc.text('Supplier SKU', 40, 40, { width: 65, lineBreak: false });
-      doc.text('Internal SKU', 105, 40, { width: 65, lineBreak: false });
-      doc.text('Product Name', 170, 40, { width: 105, lineBreak: false });
+      doc.text('SKU', 40, 40, { width: 120, lineBreak: false });
+      doc.text('Product Name', 165, 40, { width: 110, lineBreak: false });
       doc.text('Pack Size', 275, 40, { width: 45, align: 'center', lineBreak: false });
       doc.text('Ordered Cases', 325, 40, { width: 60, align: 'right', lineBreak: false });
       doc.text('Total Singles', 385, 40, { width: 60, align: 'right', lineBreak: false });
@@ -641,9 +662,14 @@ async function generatePoPdf(id, reqUser) {
     const rowY = doc.y;
     doc.fontSize(7).font('Helvetica').fillColor('#000000');
 
-    doc.text(item.productSku || '-', 40, rowY, { width: 65, ellipsis: true });
-    doc.text(item.Product?.sku || '-', 105, rowY, { width: 65, ellipsis: true });
-    doc.text(item.productName || '-', 170, rowY, { width: 110, ellipsis: true });
+    // Show Supplier SKU primarily. 
+    // If it's missing or identical to internal, just show the internal SKU.
+    const supplierSku = String(item.productSku || '').trim();
+    const internalSku = String(item.Product?.sku || '').trim();
+    const displaySku = (supplierSku && supplierSku !== internalSku) ? supplierSku : internalSku;
+
+    doc.text(displaySku || '-', 40, rowY, { width: 120, ellipsis: true });
+    doc.text(item.productName || '-', 165, rowY, { width: 110, ellipsis: true });
     doc.text(String(packSize), 280, rowY, { width: 35, align: 'center' });
     doc.text(orderedCases % 1 === 0 ? String(orderedCases) : orderedCases.toFixed(2), 315, rowY, { width: 60, align: 'right' });
     doc.text(String(qtySingles), 375, rowY, { width: 60, align: 'right' });

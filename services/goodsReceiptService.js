@@ -340,6 +340,7 @@ async function finalizeReceiving(id, reqUser) {
           companyId: gr.companyId,
           locationId: item.locationId || null,
           batchNumber: item.batchId || null,
+          bestBeforeDate: item.bestBeforeDate || null,
           clientId: gr.clientId || null
         },
         transaction: t,
@@ -347,8 +348,8 @@ async function finalizeReceiving(id, reqUser) {
       });
 
       if (stock) {
+        await stock.increment('quantity', { by: qtyToBook, transaction: t });
         await stock.update({ 
-          quantity: (Number(stock.quantity) || 0) + qtyToBook,
           bestBeforeDate: item.bestBeforeDate || stock.bestBeforeDate
         }, { transaction: t });
       } else {

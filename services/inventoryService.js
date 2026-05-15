@@ -667,37 +667,88 @@ async function listStock(reqUser, query = {}) {
 }
 
 async function createStock(data, reqUser) {
-  const { Product } = require('../models');
+  const { Product, ProductStock, Inventory, InventoryLog, sequelize } = require('../models');
   const product = await Product.findByPk(data.productId);
   if (!product) throw new Error('Product not found');
   if (reqUser.role !== 'super_admin' && product.companyId !== reqUser.companyId) throw new Error('Product not found');
 
-  if (data.warehouseId && data.quantity > 0) {
+  const quantity = Number(data.quantity) || 0;
+  if (data.warehouseId && quantity > 0) {
     const warehouseService = require('./warehouseService');
-    await warehouseService.validateCapacity(data.warehouseId, data.quantity);
+    await warehouseService.validateCapacity(data.warehouseId, quantity);
   }
 
-  const stock = await ProductStock.create({
-    companyId: reqUser.companyId || product.companyId,
-    clientId: reqUser.clientId || data.clientId || null,
-    productId: data.productId,
-    warehouseId: data.warehouseId,
-    locationId: data.locationId || null,
-    quantity: data.quantity ?? 0,
-    reserved: data.reserved ?? 0,
-    status: data.status || 'ACTIVE',
-    lotNumber: data.lotNumber || null,
-    batchNumber: data.batchNumber || null,
-    serialNumber: data.serialNumber || null,
-    bestBeforeDate: data.bestBeforeDate || null,
-  });
-  return ProductStock.findByPk(stock.id, {
-    include: [
-      { association: 'Product' },
-      { association: 'Warehouse' },
-      { association: 'Location', required: false },
-    ],
-  });
+  const transaction = await sequelize.transaction();
+  try {
+    const stockWhere = {
+      productId: data.productId,
+      warehouseId: data.warehouseId,
+      locationId: data.locationId || null,
+      batchNumber: data.batchNumber || null,
+      bestBeforeDate: data.bestBeforeDate || null,
+      clientId: reqUser.clientId || data.clientId || null
+    };
+
+    let stock = await ProductStock.findOne({ where: stockWhere, transaction });
+    
+    if (stock) {
+      await stock.update({
+        quantity: (Number(stock.quantity) || 0) + quantity,
+        reserved: (Number(stock.reserved) || 0) + (Number(data.reserved) || 0),
+        status: data.status || stock.status
+      }, { transaction });
+    } else {
+      stock = await ProductStock.create({
+        companyId: reqUser.companyId || product.companyId,
+        clientId: reqUser.clientId || data.clientId || null,
+        productId: data.productId,
+        warehouseId: data.warehouseId,
+        locationId: data.locationId || null,
+        quantity: quantity,
+        reserved: Number(data.reserved) || 0,
+        status: data.status || 'ACTIVE',
+        lotNumber: data.lotNumber || null,
+        batchNumber: data.batchNumber || null,
+        serialNumber: data.serialNumber || null,
+        bestBeforeDate: data.bestBeforeDate || null,
+      }, { transaction });
+    }
+
+    // Sync Warehouse Total
+    const [inv] = await Inventory.findOrCreate({
+      where: { productId: data.productId, warehouseId: data.warehouseId },
+      defaults: { quantity: 0, reservedQuantity: 0 },
+      transaction
+    });
+    await inv.increment('quantity', { by: quantity, transaction });
+
+    // Create Log
+    await InventoryLog.create({
+      productId: data.productId,
+      warehouseId: data.warehouseId,
+      locationId: data.locationId || null,
+      clientId: reqUser.clientId || data.clientId || null,
+      type: 'IN',
+      quantity,
+      batchNumber: data.batchNumber || null,
+      bestBeforeDate: data.bestBeforeDate || null,
+      reason: 'Manual Stock Creation',
+      userId: reqUser.id
+    }, { transaction });
+
+    await transaction.commit();
+
+    return ProductStock.findByPk(stock.id, {
+      include: [
+        { association: 'Product' },
+        { association: 'Warehouse' },
+        { association: 'Location', required: false },
+      ],
+    });
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  }
 }
 
 async function updateStock(stockId, data, reqUser) {
@@ -928,6 +979,7 @@ async function createAdjustment(data, reqUser) {
       warehouseId: warehouseId,
       locationId: locationId || null,
       batchNumber: batchNumber ? String(batchNumber).trim() : null,
+      bestBeforeDate: bestBeforeDate || null,
       clientId: clientId ? Number(clientId) : null
     };
 
@@ -959,9 +1011,13 @@ async function createAdjustment(data, reqUser) {
 
     // 1. Update ProductStock
     if (stock) {
-      const newQty = type === 'INCREASE' ? (stock.quantity || 0) + qty : Math.max(0, (stock.quantity || 0) - qty);
+      if (type === 'INCREASE') {
+        await stock.increment('quantity', { by: qty, transaction });
+      } else {
+        await stock.decrement('quantity', { by: qty, transaction });
+      }
+      // Update metadata fields
       await stock.update({
-        quantity: newQty,
         bestBeforeDate: bestBeforeDate || stock.bestBeforeDate,
         clientId: clientId || stock.clientId,
         userId: reqUser.id,
@@ -1298,62 +1354,87 @@ async function createBatch(data, reqUser) {
 
   const calculatedUnitCost = data.unitCost != null ? parseFloat(data.unitCost) : 0;
 
-  const batch = await Batch.create({
-    companyId,
-    batchNumber: data.batchNumber || String(Date.now()),
-    productId: data.productId,
-    warehouseId: data.warehouseId,
-    locationId: data.locationId || null,
-    quantity: parseInt(data.quantity, 10) || 0,
-    reserved: 0,
-    unitCost: calculatedUnitCost,
-    receivedDate: data.receivedDate || null,
-    expiryDate: data.expiryDate || null,
-    manufacturingDate: data.manufacturingDate || null,
-    supplierId: data.supplierId || null,
-    status: 'ACTIVE',
-  });
+  const transaction = await sequelize.transaction();
+  try {
+    const batch = await Batch.create({
+      companyId,
+      batchNumber: data.batchNumber || String(Date.now()),
+      productId: data.productId,
+      warehouseId: data.warehouseId,
+      locationId: data.locationId || null,
+      quantity: parseInt(data.quantity, 10) || 0,
+      reserved: 0,
+      unitCost: calculatedUnitCost,
+      receivedDate: data.receivedDate || null,
+      expiryDate: data.expiryDate || null,
+      manufacturingDate: data.manufacturingDate || null,
+      supplierId: data.supplierId || null,
+      status: 'ACTIVE',
+    }, { transaction });
 
-  if (batch.quantity > 0 && batch.warehouseId) {
-    const warehouseService = require('./warehouseService');
-    await warehouseService.validateCapacity(batch.warehouseId, batch.quantity);
-  }
-
-  // Sync with ProductStock if quantity > 0
-  if (batch.quantity > 0) {
-    const stockQty = batch.quantity;
-    const stockWhere = {
-      productId: batch.productId,
-      warehouseId: batch.warehouseId,
-      locationId: batch.locationId || null,
-      batchNumber: batch.batchNumber,
-    };
-
-    // Check if stock exists matching this batch
-    let stock = await ProductStock.findOne({ where: stockWhere });
-    if (stock) {
-      await stock.increment('quantity', { by: stockQty });
-    } else {
-      await ProductStock.create({
-        ...stockWhere,
-        companyId: batch.companyId,
-        quantity: stockQty,
-        reserved: 0,
-        status: 'ACTIVE',
-        expiryDate: batch.expiryDate, // Sync expiry if possible, though model might need update
-      });
+    if (batch.quantity > 0 && batch.warehouseId) {
+      const warehouseService = require('./warehouseService');
+      await warehouseService.validateCapacity(batch.warehouseId, batch.quantity);
     }
 
-    // [FIX] Also sync Warehouse Level Total
-    const { Inventory } = require('../models');
-    const [inv] = await Inventory.findOrCreate({
-      where: { productId: batch.productId, warehouseId: batch.warehouseId },
-      defaults: { quantity: 0, reservedQuantity: 0 }
-    });
-    await inv.increment('quantity', { by: stockQty });
-  }
+    // Sync with ProductStock if quantity > 0
+    if (batch.quantity > 0) {
+      const stockQty = batch.quantity;
+      const stockWhere = {
+        productId: batch.productId,
+        warehouseId: batch.warehouseId,
+        locationId: batch.locationId || null,
+        batchNumber: batch.batchNumber,
+        bestBeforeDate: batch.expiryDate || null,
+        clientId: data.clientId || null
+      };
 
-  return getBatchById(batch.id, reqUser);
+      let stock = await ProductStock.findOne({ where: stockWhere, transaction });
+      if (stock) {
+        await stock.update({
+          quantity: (Number(stock.quantity) || 0) + stockQty
+        }, { transaction });
+      } else {
+        await ProductStock.create({
+          ...stockWhere,
+          companyId: batch.companyId,
+          quantity: stockQty,
+          reserved: 0,
+          status: 'ACTIVE'
+        }, { transaction });
+      }
+
+      // Sync Warehouse Total
+      const { Inventory } = require('../models');
+      const [inv] = await Inventory.findOrCreate({
+        where: { productId: batch.productId, warehouseId: batch.warehouseId },
+        defaults: { quantity: 0, reservedQuantity: 0 },
+        transaction
+      });
+      await inv.increment('quantity', { by: stockQty, transaction });
+
+      // Create Log
+      const { InventoryLog } = require('../models');
+      await InventoryLog.create({
+        productId: batch.productId,
+        warehouseId: batch.warehouseId,
+        locationId: batch.locationId || null,
+        clientId: data.clientId || null,
+        type: 'IN',
+        quantity: stockQty,
+        batchNumber: batch.batchNumber,
+        bestBeforeDate: batch.expiryDate || null,
+        reason: 'Batch Creation',
+        userId: reqUser.id
+      }, { transaction });
+    }
+
+    await transaction.commit();
+    return getBatchById(batch.id, reqUser);
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  }
 }
 
 async function getBatchById(id, reqUser) {
@@ -1697,7 +1778,7 @@ async function listInventoryLogs(reqUser, query = {}) {
 
 
 async function stockIn(data, reqUser) {
-  const { Inventory, InventoryLog, Product, ProductStock } = require('../models');
+  const { Inventory, InventoryLog, Product, ProductStock, sequelize } = require('../models');
   const {
     productId, warehouseId, locationId, clientId,
     quantity, referenceId, batchNumber, bestBeforeDate, reason
@@ -1709,59 +1790,76 @@ async function stockIn(data, reqUser) {
   if (!product) throw new Error('Product not found');
   if (reqUser.role !== 'super_admin' && product.companyId !== reqUser.companyId) throw new Error('Product not found');
 
-  if (!String(batchNumber || '').trim()) {
+  if (isTruthyYes(product.requireBatchTracking) && !String(batchNumber || '').trim()) {
     throw new Error(`${product.name || 'This product'} requires a Batch Number for accurate tracking`);
   }
-  if (!bestBeforeDate) {
+  if (isTruthyYes(product.perishable) && !bestBeforeDate) {
     throw new Error(`${product.name || 'This product'} requires a Best Before (Expiry) Date`);
   }
   await validateHeatSensitivePlacement({ product, locationId, actionLabel: 'booked' });
 
-  // 1. Sync Warehouse Level Total
-  const [inventory] = await Inventory.findOrCreate({
-    where: { productId, warehouseId },
-    defaults: { quantity: 0, reservedQuantity: 0 }
-  });
-  await inventory.increment('quantity', { by: quantity });
+  const transaction = await sequelize.transaction();
+  try {
+    // 1. Sync Warehouse Level Total
+    const [inventory] = await Inventory.findOrCreate({
+      where: { productId, warehouseId },
+      defaults: { quantity: 0, reservedQuantity: 0 },
+      transaction
+    });
+    await inventory.increment('quantity', { by: quantity, transaction });
 
-  // 2. Sync Granular Stock (Batch + Location)
-  const [stock] = await ProductStock.findOrCreate({
-    where: {
+    // 2. Sync Granular Stock (Batch + Location + BBD)
+    const stockWhere = {
       productId,
       warehouseId,
       locationId: locationId || null,
       batchNumber: batchNumber.trim(),
+      bestBeforeDate: bestBeforeDate || null,
       clientId: clientId || null
-    },
-    defaults: {
-      companyId: product.companyId,
-      quantity: 0,
-      reserved: 0,
-      bestBeforeDate,
-      status: 'ACTIVE'
+    };
+
+    let stock = await ProductStock.findOne({ where: stockWhere, transaction });
+    
+    if (stock) {
+      await stock.update({
+        quantity: (Number(stock.quantity) || 0) + Number(quantity)
+      }, { transaction });
+    } else {
+      await ProductStock.create({
+        companyId: product.companyId,
+        productId,
+        warehouseId,
+        locationId: locationId || null,
+        batchNumber: batchNumber.trim(),
+        clientId: clientId || null,
+        quantity: quantity,
+        reserved: 0,
+        bestBeforeDate,
+        status: 'ACTIVE'
+      }, { transaction });
     }
-  });
-  await stock.increment('quantity', { by: quantity });
-  if (stock.bestBeforeDate !== bestBeforeDate) {
-    await stock.update({ bestBeforeDate });
+
+    // 3. Create Audit Log
+    await InventoryLog.create({
+      productId,
+      warehouseId,
+      locationId: locationId || null,
+      clientId: clientId || null,
+      type: 'IN',
+      quantity,
+      referenceId: referenceId || 'SCAN_IN',
+      batchNumber: batchNumber.trim(),
+      bestBeforeDate,
+      reason: reason || 'Scan In',
+      userId: reqUser.id
+    }, { transaction });
+
+    await transaction.commit();
+    return inventory.reload();
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
   }
-
-  // 3. Create Audit Log
-  await InventoryLog.create({
-    productId,
-    warehouseId,
-    locationId: locationId || null,
-    clientId: clientId || null,
-    type: 'IN',
-    quantity,
-    referenceId: referenceId || 'SCAN_IN',
-    batchNumber: batchNumber.trim(),
-    bestBeforeDate,
-    reason: reason || 'Scan In',
-    userId: reqUser.id
-  });
-
-  return inventory.reload();
 }
 
 async function stockOut(data, reqUser) {
@@ -1807,10 +1905,26 @@ async function transferStock(data, reqUser) {
   const product = await Product.findByPk(productId);
   if (!product) throw new Error('Product not found');
   if (reqUser.role !== 'super_admin' && product.companyId !== reqUser.companyId) throw new Error('Product not found');
-  if (!String(batchNumber || '').trim()) {
-    throw new Error(`${product.name || 'This product'} requires a Batch Number for this transfer`);
+
+  // Check if source stock row actually has a batch number
+  const sourceStockCheck = await ProductStock.findOne({
+    where: {
+      productId,
+      warehouseId: fromWarehouseId,
+      locationId: fromLocationId,
+      clientId: clientId || null
+    }
+  });
+
+  // Only enforce batch tracking if product requires it AND source stock actually has a batch (or we are moving a significant amount)
+  // Actually, let's be lenient: if source has NO batch, allow transfer without it to avoid blockers.
+  if (isTruthyYes(product.requireBatchTracking) && !String(batchNumber || '').trim()) {
+    if (sourceStockCheck && String(sourceStockCheck.batchNumber || '').trim()) {
+      throw new Error(`${product.name || 'This product'} requires a Batch Number for this transfer`);
+    }
+    // If source has no batch, we'll allow it but warn in logs? No, just allow it as requested by user.
   }
-  if (!bestBeforeDate) {
+  if (isTruthyYes(product.perishable) && !bestBeforeDate) {
     throw new Error(`${product.name || 'This product'} requires a Best Before (Expiry) Date for this transfer`);
   }
   await validateHeatSensitivePlacement({ product, locationId: toLocationId, actionLabel: 'transferred' });
