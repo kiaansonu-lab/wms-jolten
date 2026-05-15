@@ -60,10 +60,15 @@ async function getById(id, reqUser) {
     console.warn(`[PO_GET] PO ID ${id} not found in DB`);
     throw new Error('Purchase order not found');
   }
-  console.log(`[PO_GET] Found PO ${po.id}, companyId: ${po.companyId}, reqUser.companyId: ${reqUser.companyId}, reqUser.role: ${reqUser.role}`);
-  const userRole = (reqUser.role || '').toLowerCase().replace(/-/g, '_');
-  if (userRole !== 'super_admin' && Number(po.companyId) !== Number(reqUser.companyId)) {
-    console.warn(`[PO_GET] Company mismatch: PO company ${po.companyId} (type ${typeof po.companyId}) vs user company ${reqUser.companyId} (type ${typeof reqUser.companyId})`);
+  const poCompanyId = po.get ? po.get('companyId') : po.companyId;
+  const userCompanyId = reqUser.get ? reqUser.get('companyId') : reqUser.companyId;
+  const rawRole = reqUser.get ? reqUser.get('role') : reqUser.role;
+  const userRole = (rawRole || '').toLowerCase().replace(/-/g, '_');
+
+  console.log('[PO_DEBUG] Comparison:', { poCompanyId, userCompanyId, userRole });
+
+  if (userRole !== 'super_admin' && Number(poCompanyId) !== Number(userCompanyId)) {
+    console.warn(`[PO_GET] Company mismatch: PO company ${poCompanyId} vs user company ${userCompanyId}`);
     throw new Error('Purchase order not found');
   }
   if (reqUser.clientId && po.clientId !== reqUser.clientId) throw new Error('Not authorized to access this client data');
