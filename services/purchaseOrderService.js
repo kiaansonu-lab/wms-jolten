@@ -55,8 +55,15 @@ async function getById(id, reqUser) {
       },
     ],
   });
-  if (!po) throw new Error('Purchase order not found');
-  if (reqUser.role !== 'super_admin' && po.companyId !== reqUser.companyId) throw new Error('Purchase order not found');
+  if (!po) {
+    console.warn(`[PO_GET] PO ID ${id} not found in DB`);
+    throw new Error('Purchase order not found');
+  }
+  console.log(`[PO_GET] Found PO ${po.id}, companyId: ${po.companyId}, reqUser.companyId: ${reqUser.companyId}, reqUser.role: ${reqUser.role}`);
+  if (reqUser.role !== 'super_admin' && Number(po.companyId) !== Number(reqUser.companyId)) {
+    console.warn(`[PO_GET] Company mismatch: PO company ${po.companyId} (type ${typeof po.companyId}) vs user company ${reqUser.companyId} (type ${typeof reqUser.companyId})`);
+    throw new Error('Purchase order not found');
+  }
   if (reqUser.clientId && po.clientId !== reqUser.clientId) throw new Error('Not authorized to access this client data');
 
   const poJson = po.toJSON();
