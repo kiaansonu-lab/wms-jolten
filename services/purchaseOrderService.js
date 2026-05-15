@@ -5,7 +5,8 @@ const auditLogService = require('./auditLogService');
 
 async function list(reqUser, query = {}) {
   const where = {};
-  if (reqUser.role === 'super_admin') {
+  const userRole = (reqUser.role || '').toLowerCase().replace(/-/g, '_');
+  if (userRole === 'super_admin') {
     if (query.companyId) where.companyId = query.companyId;
   } else {
     where.companyId = reqUser.companyId;
@@ -60,7 +61,8 @@ async function getById(id, reqUser) {
     throw new Error('Purchase order not found');
   }
   console.log(`[PO_GET] Found PO ${po.id}, companyId: ${po.companyId}, reqUser.companyId: ${reqUser.companyId}, reqUser.role: ${reqUser.role}`);
-  if (reqUser.role !== 'super_admin' && Number(po.companyId) !== Number(reqUser.companyId)) {
+  const userRole = (reqUser.role || '').toLowerCase().replace(/-/g, '_');
+  if (userRole !== 'super_admin' && Number(po.companyId) !== Number(reqUser.companyId)) {
     console.warn(`[PO_GET] Company mismatch: PO company ${po.companyId} (type ${typeof po.companyId}) vs user company ${reqUser.companyId} (type ${typeof reqUser.companyId})`);
     throw new Error('Purchase order not found');
   }
@@ -76,11 +78,12 @@ async function getById(id, reqUser) {
 }
 
 async function create(body, reqUser) {
-  if (reqUser.role !== 'super_admin' && reqUser.role !== 'company_admin' && reqUser.role !== 'warehouse_manager' && reqUser.role !== 'inventory_manager') {
+  const userRole = (reqUser.role || '').toLowerCase().replace(/-/g, '_');
+  if (userRole !== 'super_admin' && userRole !== 'company_admin' && userRole !== 'warehouse_manager' && userRole !== 'inventory_manager') {
     throw new Error('Not allowed to create purchase orders');
   }
   // super_admin can pass companyId in body; others use their company
-  const companyId = reqUser.role === 'super_admin' ? (body.companyId || reqUser.companyId) : reqUser.companyId;
+  const companyId = userRole === 'super_admin' ? (body.companyId || reqUser.companyId) : reqUser.companyId;
   if (!companyId) throw new Error('Company context required');
 
   const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
