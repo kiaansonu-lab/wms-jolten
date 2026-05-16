@@ -337,6 +337,9 @@ function validateCsvHeaders(rows) {
     'confirmedquantity',
     'editablequantity',
     'editableqty',
+    'orderedcases',
+    'cases',
+    'caseqty',
   ].some((k) => keys.includes(k));
   if (!hasIdentity || !hasQty) {
     throw new Error('Invalid CSV headers. Required: Product ID or SKU or Product Name, and Final Quantity or Suggested Quantity.');
