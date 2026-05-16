@@ -28,7 +28,16 @@ function normalizeProductJson(p) {
   if (out.height != null && out.height !== '') out.height = Number(out.height);
   if (out.weight != null && out.weight !== '') out.weight = Number(out.weight);
   if (typeof out.images === 'string') {
-    try { out.images = JSON.parse(out.images); } catch (_) { out.images = null; }
+    try { 
+      out.images = JSON.parse(out.images); 
+    } catch (_) { 
+      // If it's not JSON, treat it as a comma-separated string or a single URL
+      if (out.images.trim()) {
+        out.images = out.images.split(',').map(u => u.trim()).filter(Boolean);
+      } else {
+        out.images = null;
+      }
+    }
   }
   if (typeof out.priceLists === 'string') {
     try { out.priceLists = JSON.parse(out.priceLists); } catch (_) { out.priceLists = null; }
@@ -367,11 +376,6 @@ async function bulkCreateProducts(productsArray, reqUser) {
         continue;
       }
       const existing = await Product.findOne({ where: { companyId, sku: String(data.sku).trim() } });
-      if (existing) {
-        results.skipped++;
-        results.errors.push({ row: i + 1, sku: data.sku, message: 'SKU already exists' });
-        continue;
-      }
 
       // Resolve categoryId (ID or Name)
       let resolvedCategoryId = null;
@@ -428,57 +432,64 @@ async function bulkCreateProducts(productsArray, reqUser) {
         }
       }
 
-      await Product.create({
+      const productData = {
         companyId,
         categoryId: resolvedCategoryId,
         supplierId: resolvedSupplierId,
         name: String(data.name).trim(),
-
         sku: String(data.sku).trim(),
-        barcode: data.barcode ? String(data.barcode).trim() : null,
-        description: data.description ? String(data.description).trim() : null,
-        color: data.color ? String(data.color).trim() : null,
-        productType: data.productType || null,
-        unitOfMeasure: data.unitOfMeasure || null,
-        price: data.price != null ? Number(data.price) : 0,
+        barcode: data.barcode ? String(data.barcode).trim() : (existing ? existing.barcode : null),
+        description: data.description ? String(data.description).trim() : (existing ? existing.description : null),
+        color: data.color ? String(data.color).trim() : (existing ? existing.color : null),
+        productType: data.productType || (existing ? existing.productType : 'SIMPLE'),
+        unitOfMeasure: data.unitOfMeasure || (existing ? existing.unitOfMeasure : 'EACH'),
+        price: data.price != null ? Number(data.price) : (existing ? existing.price : 0),
         costPrice: (function () {
-          const supplierCost = data.costPrice != null ? Number(data.costPrice) : 0;
-          const packSize = data.packSize != null ? Number(data.packSize) : 1;
-          return packSize > 0 ? (supplierCost / packSize) : supplierCost;
+          if (data.costPrice != null) {
+            const supplierCost = Number(data.costPrice) || 0;
+            const packSize = data.packSize != null ? Number(data.packSize) : 1;
+            return packSize > 0 ? (supplierCost / packSize) : supplierCost;
+          }
+          return existing ? existing.costPrice : 0;
         })(),
-        packSize: data.packSize != null ? Number(data.packSize) : 1,
-        vatRate: data.vatRate != null ? Number(data.vatRate) : null,
-        vatCode: data.vatCode || null,
-        customsTariff: data.customsTariff != null ? String(data.customsTariff) : null,
-        marketplaceSkus: data.marketplaceSkus && typeof data.marketplaceSkus === 'object' ? data.marketplaceSkus : null,
-        heatSensitive: data.heatSensitive || null,
-        perishable: data.perishable || null,
-        requireBatchTracking: data.requireBatchTracking || null,
-        shelfLifeDays: data.shelfLifeDays != null ? Number(data.shelfLifeDays) : null,
-        length: data.length != null ? Number(data.length) : null,
-        width: data.width != null ? Number(data.width) : null,
-        height: data.height != null ? Number(data.height) : null,
-        dimensionUnit: data.dimensionUnit || null,
-        weight: data.weight != null ? Number(data.weight) : null,
-        weightUnit: data.weightUnit || null,
-        reorderLevel: data.reorderLevel != null ? Number(data.reorderLevel) : 0,
-        reorderQty: data.reorderQty != null ? Number(data.reorderQty) : null,
-        maxStock: data.maxStock != null ? Number(data.maxStock) : null,
-        status: data.status && String(data.status).toUpperCase() === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+        packSize: data.packSize != null ? Number(data.packSize) : (existing ? existing.packSize : 1),
+        vatRate: data.vatRate != null ? Number(data.vatRate) : (existing ? existing.vatRate : null),
+        vatCode: data.vatCode || (existing ? existing.vatCode : null),
+        customsTariff: data.customsTariff != null ? String(data.customsTariff) : (existing ? existing.customsTariff : null),
+        marketplaceSkus: (data.marketplaceSkus && typeof data.marketplaceSkus === 'object') ? data.marketplaceSkus : (existing ? existing.marketplaceSkus : null),
+        heatSensitive: data.heatSensitive || (existing ? existing.heatSensitive : null),
+        perishable: data.perishable || (existing ? existing.perishable : null),
+        requireBatchTracking: data.requireBatchTracking || (existing ? existing.requireBatchTracking : null),
+        shelfLifeDays: data.shelfLifeDays != null ? Number(data.shelfLifeDays) : (existing ? existing.shelfLifeDays : null),
+        length: data.length != null ? Number(data.length) : (existing ? existing.length : null),
+        width: data.width != null ? Number(data.width) : (existing ? existing.width : null),
+        height: data.height != null ? Number(data.height) : (existing ? existing.height : null),
+        dimensionUnit: data.dimensionUnit || (existing ? existing.dimensionUnit : null),
+        weight: data.weight != null ? Number(data.weight) : (existing ? existing.weight : null),
+        weightUnit: data.weightUnit || (existing ? existing.weightUnit : null),
+        reorderLevel: data.reorderLevel != null ? Number(data.reorderLevel) : (existing ? existing.reorderLevel : 0),
+        reorderQty: data.reorderQty != null ? Number(data.reorderQty) : (existing ? existing.reorderQty : null),
+        maxStock: data.maxStock != null ? Number(data.maxStock) : (existing ? existing.maxStock : null),
+        status: data.status && String(data.status).toUpperCase() === 'INACTIVE' ? 'INACTIVE' : (existing ? existing.status : 'ACTIVE'),
         images: (function () {
           if (Array.isArray(data.images)) return data.images;
           if (typeof data.images === 'string' && data.images.trim()) {
             return data.images.split(',').map(u => u.trim()).filter(Boolean);
           }
-          return null;
+          return existing ? existing.images : null;
         })(),
-        cartons: Array.isArray(data.cartons) && data.cartons.length > 0 ? data.cartons : null,
-        priceLists: data.priceLists && typeof data.priceLists === 'object' ? data.priceLists : null,
-        supplierProducts: Array.isArray(data.supplierProducts) ? data.supplierProducts : null,
-        alternativeSkus: Array.isArray(data.alternativeSkus) ? data.alternativeSkus : null,
-        packSize: data.packSize != null ? Number(data.packSize) : 1,
-        bestBeforeDateWarningPeriodDays: data.bestBeforeDateWarningPeriodDays != null ? Number(data.bestBeforeDateWarningPeriodDays) : 0,
-      });
+        cartons: Array.isArray(data.cartons) && data.cartons.length > 0 ? data.cartons : (existing ? existing.cartons : null),
+        priceLists: (data.priceLists && typeof data.priceLists === 'object') ? data.priceLists : (existing ? existing.priceLists : null),
+        supplierProducts: Array.isArray(data.supplierProducts) ? data.supplierProducts : (existing ? existing.supplierProducts : null),
+        alternativeSkus: Array.isArray(data.alternativeSkus) ? data.alternativeSkus : (existing ? existing.alternativeSkus : null),
+        bestBeforeDateWarningPeriodDays: data.bestBeforeDateWarningPeriodDays != null ? Number(data.bestBeforeDateWarningPeriodDays) : (existing ? existing.bestBeforeDateWarningPeriodDays : 0),
+      };
+
+      if (existing) {
+        await existing.update(productData);
+      } else {
+        await Product.create(productData);
+      }
       results.created++;
     } catch (err) {
       results.skipped++;
