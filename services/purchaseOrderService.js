@@ -641,11 +641,17 @@ async function generatePoPdf(id, reqUser) {
     totalNet += lineNet;
     totalVat += lineVat;
 
+    let sSku = item.productSku || '-';
+    let iSku = item.Product?.sku || '-';
+    if (sSku === iSku && sSku !== '-') {
+      iSku = '-';
+    }
+
     const rowY = doc.y;
     doc.fontSize(7).font('Helvetica').fillColor('#000000');
 
-    doc.text(item.productSku || '-', 40, rowY, { width: 65, ellipsis: true });
-    doc.text(item.Product?.sku || '-', 105, rowY, { width: 65, ellipsis: true });
+    doc.text(sSku, 40, rowY, { width: 65, ellipsis: true });
+    doc.text(iSku, 105, rowY, { width: 65, ellipsis: true });
     doc.text(item.productName || '-', 170, rowY, { width: 110, ellipsis: true });
     doc.text(String(packSize), 280, rowY, { width: 35, align: 'center' });
     doc.text(orderedCases % 1 === 0 ? String(orderedCases) : orderedCases.toFixed(2), 315, rowY, { width: 60, align: 'right' });
