@@ -5,8 +5,7 @@ const auditLogService = require('./auditLogService');
 
 async function list(reqUser, query = {}) {
   const where = {};
-  const userRole = (reqUser.role || '').toLowerCase().replace(/-/g, '_');
-  if (userRole === 'super_admin') {
+  if (reqUser.role === 'super_admin') {
     if (query.companyId) where.companyId = query.companyId;
   } else {
     where.companyId = reqUser.companyId;
@@ -25,18 +24,10 @@ async function list(reqUser, query = {}) {
       { association: 'Supplier', attributes: ['id', 'name', 'code'] },
       { association: 'Warehouse', attributes: ['id', 'name', 'code'], required: false },
       { association: 'Client', attributes: ['id', 'name'], required: false },
-      { association: 'PurchaseOrderItems', include: [{ model: Product, attributes: ['id', 'name', 'sku'], include: [{ association: 'ProductStocks', attributes: ['quantity'] }] }] },
+      { association: 'PurchaseOrderItems', include: [{ association: 'Product', attributes: ['id', 'name', 'sku'] }] },
     ],
   });
-  
-  return pos.map(po => {
-    const poJson = po.toJSON();
-    poJson.PurchaseOrderItems = poJson.PurchaseOrderItems.map(item => {
-      const currentStock = (item.Product?.ProductStocks || []).reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
-      return { ...item, currentStock };
-    });
-    return poJson;
-  });
+  return pos;
 }
 
 async function getById(id, reqUser) {
@@ -45,50 +36,21 @@ async function getById(id, reqUser) {
       { association: 'Supplier' },
       { association: 'Client', attributes: ['id', 'name', 'header_image_url'] },
       { association: 'Warehouse', attributes: ['id', 'name', 'code'] },
-      { 
-        association: 'PurchaseOrderItems', 
-        include: [
-          { 
-            model: Product, 
-            include: [{ association: 'ProductStocks', attributes: ['quantity'] }] 
-          }
-        ] 
-      },
+      { association: 'PurchaseOrderItems', include: ['Product'] },
     ],
   });
-
-  if (!po) {
-    console.error(`[PO_CRITICAL] PO ID ${id} NOT FOUND in DB`);
-    throw new Error('Purchase order not found');
-  }
-
-  const poCompanyId = po.get ? po.get('companyId') : po.companyId;
-  const userCompanyId = reqUser.get ? reqUser.get('companyId') : reqUser.companyId;
-  const userRole = (reqUser.role || '').toLowerCase().replace(/-/g, '_');
-
-  if (userRole !== 'super_admin' && Number(poCompanyId) !== Number(userCompanyId)) {
-    console.warn(`[PO_GET] Access Denied: PO Company ${poCompanyId} vs User Company ${userCompanyId}`);
-    throw new Error('Purchase order not found');
-  }
-
+  if (!po) throw new Error('Purchase order not found');
+  if (reqUser.role !== 'super_admin' && po.companyId !== reqUser.companyId) throw new Error('Purchase order not found');
   if (reqUser.clientId && po.clientId !== reqUser.clientId) throw new Error('Not authorized to access this client data');
-
-  const poJson = po.toJSON();
-  poJson.PurchaseOrderItems = (poJson.PurchaseOrderItems || []).map(item => {
-    const currentStock = (item.Product?.ProductStocks || []).reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
-    return { ...item, currentStock };
-  });
-
-  return poJson;
+  return po;
 }
 
 async function create(body, reqUser) {
-  const userRole = (reqUser.role || '').toLowerCase().replace(/-/g, '_');
-  if (userRole !== 'super_admin' && userRole !== 'company_admin' && userRole !== 'warehouse_manager' && userRole !== 'inventory_manager') {
+  if (reqUser.role !== 'super_admin' && reqUser.role !== 'company_admin' && reqUser.role !== 'warehouse_manager' && reqUser.role !== 'inventory_manager') {
     throw new Error('Not allowed to create purchase orders');
   }
   // super_admin can pass companyId in body; others use their company
-  const companyId = userRole === 'super_admin' ? (body.companyId || reqUser.companyId) : reqUser.companyId;
+  const companyId = reqUser.role === 'super_admin' ? (body.companyId || reqUser.companyId) : reqUser.companyId;
   if (!companyId) throw new Error('Company context required');
 
   const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -544,20 +506,20 @@ async function generatePoPdf(id, reqUser) {
       if (finalUrl.includes('cloudinary.com') && finalUrl.includes('/upload/')) {
         finalUrl = finalUrl.replace('/upload/', '/upload/f_jpg,q_auto,w_1200/');
       }
-      
+
       const separator = finalUrl.includes('?') ? '&' : '?';
       finalUrl += `${separator}t=${Date.now()}`;
 
-      const response = await axios.get(finalUrl, { 
+      const response = await axios.get(finalUrl, {
         responseType: 'arraybuffer',
         timeout: 15000,
-        headers: { 
+        headers: {
           'Cache-Control': 'no-cache',
           'Pragma': 'no-cache',
           'Expires': '0'
         }
       });
-      
+
       const buffer = Buffer.from(new Uint8Array(response.data));
       fs.writeFileSync(tempFilePath, buffer);
 
@@ -566,21 +528,21 @@ async function generatePoPdf(id, reqUser) {
           // If it's a professional client header, render as a banner but limited height to avoid overlap
           doc.image(tempFilePath, 40, 15, { fit: [515, 70] });
           logoLoaded = true;
-          currentY = 95; 
+          currentY = 95;
         } else {
           // Fallback company logo
           doc.image(tempFilePath, 40, 15, { fit: [120, 60] });
           logoLoaded = true;
           currentY = 85;
         }
-        
+
         doc.on('end', () => {
-          try { if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath); } catch (e) {}
+          try { if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath); } catch (e) { }
         });
       }
     } catch (err) {
       console.error('[PDF] Logo load failed:', err.message);
-      try { if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath); } catch (e) {}
+      try { if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath); } catch (e) { }
     }
   }
 
@@ -628,8 +590,9 @@ async function generatePoPdf(id, reqUser) {
   // --- TABLE HEADERS ---
   const tableTop = doc.y;
   doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#444444');
-  doc.text('SKU', 40, tableTop, { width: 120, lineBreak: false });
-  doc.text('Product Name', 165, tableTop, { width: 110, lineBreak: false });
+  doc.text('Supplier SKU', 40, tableTop, { width: 65, lineBreak: false });
+  doc.text('Internal SKU', 105, tableTop, { width: 65, lineBreak: false });
+  doc.text('Product Name', 170, tableTop, { width: 105, lineBreak: false });
   doc.text('Pack Size', 275, tableTop, { width: 45, align: 'center', lineBreak: false });
   doc.text('Ordered Cases', 325, tableTop, { width: 60, align: 'right', lineBreak: false });
   doc.text('Total Singles', 385, tableTop, { width: 60, align: 'right', lineBreak: false });
@@ -647,8 +610,9 @@ async function generatePoPdf(id, reqUser) {
       doc.addPage();
       // headers on new page
       doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#444444');
-      doc.text('SKU', 40, 40, { width: 120, lineBreak: false });
-      doc.text('Product Name', 165, 40, { width: 110, lineBreak: false });
+      doc.text('Supplier SKU', 40, 40, { width: 65, lineBreak: false });
+      doc.text('Internal SKU', 105, 40, { width: 65, lineBreak: false });
+      doc.text('Product Name', 170, 40, { width: 105, lineBreak: false });
       doc.text('Pack Size', 275, 40, { width: 45, align: 'center', lineBreak: false });
       doc.text('Ordered Cases', 325, 40, { width: 60, align: 'right', lineBreak: false });
       doc.text('Total Singles', 385, 40, { width: 60, align: 'right', lineBreak: false });
@@ -661,12 +625,12 @@ async function generatePoPdf(id, reqUser) {
     const qtySingles = Number(item.quantity || 0);
     const packSize = Number(item.packSize || 1);
     const orderedCases = qtySingles / packSize;
-    
+
     // unitPrice in DB is price per SINGLE unit. 
     // Case Cost = unitPrice * packSize
     const unitPriceSingle = Number(item.unitPrice || 0);
     const caseCost = unitPriceSingle * packSize;
-    
+
     const lineNet = orderedCases * caseCost;
     const vatRate = Number(item.Product?.vatRate || 0);
     const lineVat = lineNet * (vatRate / 100);
@@ -677,14 +641,9 @@ async function generatePoPdf(id, reqUser) {
     const rowY = doc.y;
     doc.fontSize(7).font('Helvetica').fillColor('#000000');
 
-    // Show Supplier SKU primarily. 
-    // If it's missing or identical to internal, just show the internal SKU.
-    const supplierSku = String(item.productSku || '').trim();
-    const internalSku = String(item.Product?.sku || '').trim();
-    const displaySku = (supplierSku && supplierSku !== internalSku) ? supplierSku : internalSku;
-
-    doc.text(displaySku || '-', 40, rowY, { width: 120, ellipsis: true });
-    doc.text(item.productName || '-', 165, rowY, { width: 110, ellipsis: true });
+    doc.text(item.productSku || '-', 40, rowY, { width: 65, ellipsis: true });
+    doc.text(item.Product?.sku || '-', 105, rowY, { width: 65, ellipsis: true });
+    doc.text(item.productName || '-', 170, rowY, { width: 110, ellipsis: true });
     doc.text(String(packSize), 280, rowY, { width: 35, align: 'center' });
     doc.text(orderedCases % 1 === 0 ? String(orderedCases) : orderedCases.toFixed(2), 315, rowY, { width: 60, align: 'right' });
     doc.text(String(qtySingles), 375, rowY, { width: 60, align: 'right' });
