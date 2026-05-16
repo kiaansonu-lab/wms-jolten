@@ -132,10 +132,10 @@ async function create(body, reqUser) {
 async function updateReceived(id, body, reqUser) {
   const t = await GoodsReceipt.sequelize.transaction();
   try {
-    const gr = await GoodsReceipt.findByPk(id, { 
+    const gr = await GoodsReceipt.findByPk(id, {
       include: ['GoodsReceiptItems'],
       transaction: t,
-      lock: t.LOCK.UPDATE 
+      lock: t.LOCK.UPDATE
     });
     if (!gr) throw new Error('Goods receipt not found');
     if (reqUser.role !== 'super_admin' && gr.companyId !== reqUser.companyId) throw new Error('Goods receipt not found');
@@ -152,7 +152,7 @@ async function updateReceived(id, body, reqUser) {
       const line = gr.GoodsReceiptItems?.find((i) => i.productId === row.productId || i.id === row.id);
       if (line) {
         const newReceivedQty = Number(row.receivedQty) || 0;
-        
+
         // Over-receive validation
         const poItem = po.PurchaseOrderItems.find(p => p.productId === line.productId);
         if (poItem) {
@@ -170,16 +170,16 @@ async function updateReceived(id, body, reqUser) {
           */
         }
 
-        await line.update({ 
-          receivedQty: newReceivedQty, 
-          qualityStatus: row.qualityStatus || line.qualityStatus 
+        await line.update({
+          receivedQty: newReceivedQty,
+          qualityStatus: row.qualityStatus || line.qualityStatus
         }, { transaction: t });
       }
     }
 
     const newTotal = (gr.GoodsReceiptItems || []).reduce((s, i) => s + (Number(i.receivedQty) || 0), 0);
     const allReceived = (gr.GoodsReceiptItems || []).every((i) => (Number(i.receivedQty) || 0) >= (Number(i.expectedQty) || 0));
-    
+
     await gr.update({
       totalReceived: newTotal,
       status: allReceived ? 'completed' : 'in_progress',
@@ -234,10 +234,10 @@ async function updateAsnItems(id, body, reqUser) {
 async function finalizeReceiving(id, reqUser) {
   // 1. Start Transaction
   const t = await GoodsReceipt.sequelize.transaction();
-  
+
   try {
     // 2. Fetch and Lock GRN
-    const gr = await GoodsReceipt.findByPk(id, { 
+    const gr = await GoodsReceipt.findByPk(id, {
       include: [{ association: 'GoodsReceiptItems', include: ['Product'] }],
       transaction: t,
       lock: t.LOCK.UPDATE
@@ -288,13 +288,13 @@ async function finalizeReceiving(id, reqUser) {
 
       // Calculate what has been received so far in other finalized GRNs
       const otherGrItems = await GoodsReceiptItem.findAll({
-        include: [{ 
-          association: 'GoodsReceipt', 
-          where: { 
-            purchaseOrderId: po.id, 
+        include: [{
+          association: 'GoodsReceipt',
+          where: {
+            purchaseOrderId: po.id,
             status: 'completed',
             id: { [Op.ne]: id }
-          } 
+          }
         }],
         where: { productId: item.productId },
         transaction: t
@@ -334,13 +334,18 @@ async function finalizeReceiving(id, reqUser) {
 
       // 7. Update Inventory
       let stock = await ProductStock.findOne({
-        where: { 
-          productId: item.productId, 
+        where: {
+          productId: item.productId,
           warehouseId: gr.warehouseId,
           companyId: gr.companyId,
-          locationId: item.locationId || null,
-          batchNumber: item.batchId || null,
-          bestBeforeDate: item.bestBeforeDate || null,
+
+          // locationId: item.locationId || null,
+          // batchNumber: item.batchId || null,
+          // bestBeforeDate: item.bestBeforeDate || null,
+
+          locationId: (item.locationId && String(item.locationId).trim()) ? item.locationId : null,
+          batchNumber: (item.batchId && String(item.batchId).trim()) ? item.batchId : null,
+          bestBeforeDate: (item.bestBeforeDate && String(item.bestBeforeDate).trim()) ? item.bestBeforeDate : null,
           clientId: gr.clientId || null
         },
         transaction: t,
@@ -349,7 +354,7 @@ async function finalizeReceiving(id, reqUser) {
 
       if (stock) {
         await stock.increment('quantity', { by: qtyToBook, transaction: t });
-        await stock.update({ 
+        await stock.update({
           bestBeforeDate: item.bestBeforeDate || stock.bestBeforeDate
         }, { transaction: t });
       } else {
@@ -396,7 +401,7 @@ async function finalizeReceiving(id, reqUser) {
 
     // 8. Finalize GRN status
     const totalReceivedNow = (gr.GoodsReceiptItems || []).reduce((s, i) => s + (Number(i.qtyToBook) || 0), 0);
-    await gr.update({ 
+    await gr.update({
       status: 'completed',
       totalReceived: totalReceivedNow
     }, { transaction: t });
@@ -435,8 +440,8 @@ async function finalizeReceiving(id, reqUser) {
 }
 
 async function exportCsvTemplate(id, reqUser) {
-  const gr = await GoodsReceipt.findByPk(id, { 
-    include: [{ association: 'GoodsReceiptItems', include: ['Product'] }] 
+  const gr = await GoodsReceipt.findByPk(id, {
+    include: [{ association: 'GoodsReceiptItems', include: ['Product'] }]
   });
   if (!gr) throw new Error('Goods receipt not found');
   if (reqUser.role !== 'super_admin' && gr.companyId !== reqUser.companyId) throw new Error('Not authorized');
@@ -462,10 +467,10 @@ async function importCsvBbd(id, rows, reqUser) {
   for (const row of rows) {
     const sku = (row.SKU || row['sku'] || '').trim();
     if (!sku) continue;
-    
+
     const bbdStr = (row['Best Before Date (DD/MM/YYYY)'] || row['Best Before Date'] || row['bbd'] || row['best_before_date'] || '').trim();
     const batch = (row['Batch Number'] || row['Batch'] || row['batch'] || row['batch_number'] || '').trim();
-    
+
     const items = gr.GoodsReceiptItems.filter(i => i.productSku === sku);
     for (const item of items) {
       const updates = {};

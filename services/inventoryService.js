@@ -683,9 +683,9 @@ async function createStock(data, reqUser) {
     const stockWhere = {
       productId: data.productId,
       warehouseId: data.warehouseId,
-      locationId: data.locationId || null,
-      batchNumber: data.batchNumber || null,
-      bestBeforeDate: data.bestBeforeDate || null,
+      locationId: (data.locationId && String(data.locationId).trim()) ? data.locationId : null,
+      batchNumber: (data.batchNumber && String(data.batchNumber).trim()) ? data.batchNumber : null,
+      bestBeforeDate: (data.bestBeforeDate && String(data.bestBeforeDate).trim()) ? data.bestBeforeDate : null,
       clientId: reqUser.clientId || data.clientId || null
     };
 
@@ -1916,13 +1916,16 @@ async function transferStock(data, reqUser) {
     }
   });
 
-  // Only enforce batch tracking if product requires it AND source stock actually has a batch (or we are moving a significant amount)
-  // Actually, let's be lenient: if source has NO batch, allow transfer without it to avoid blockers.
+  // Only enforce batch tracking if product requires it AND source stock actually has a batch
   if (isTruthyYes(product.requireBatchTracking) && !String(batchNumber || '').trim()) {
-    if (sourceStockCheck && String(sourceStockCheck.batchNumber || '').trim()) {
-      throw new Error(`${product.name || 'This product'} requires a Batch Number for this transfer`);
+    // String(null) is "null", but (null || '') is '', and String('') is ''.
+    // However, some DB values might be the literal string "null" if poorly imported.
+    const sourceBatch = sourceStockCheck?.batchNumber;
+    const hasSourceBatch = sourceBatch && String(sourceBatch).trim() !== '' && String(sourceBatch).toLowerCase() !== 'null';
+    
+    if (hasSourceBatch) {
+      throw new Error(`${product.name || 'This product'} requires a Batch Number for this transfer because the source stock has one.`);
     }
-    // If source has no batch, we'll allow it but warn in logs? No, just allow it as requested by user.
   }
   if (isTruthyYes(product.perishable) && !bestBeforeDate) {
     throw new Error(`${product.name || 'This product'} requires a Best Before (Expiry) Date for this transfer`);
