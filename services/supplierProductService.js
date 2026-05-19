@@ -238,9 +238,8 @@ async function listMappedProductsBySupplier(reqUser, supplierId, clientId = null
   const productIds = mappings.map((m) => Number(m.productId)).filter(Boolean);
   
   const stockWhere = { productId: { [Op.in]: productIds }, companyId };
-  if (clientId) stockWhere.clientId = clientId;
 
-  console.log(`[SupplierProductService] Fetching stock for ${productIds.length} products. ClientId: ${clientId || 'none'}`);
+  console.log(`[SupplierProductService] Fetching total warehouse stock for ${productIds.length} products under companyId: ${companyId}`);
 
   const allStock = await ProductStock.findAll({
     where: stockWhere,

@@ -109,8 +109,8 @@ async function addAlternativeSku(req, res, next) {
 
 async function removeProduct(req, res, next) {
   try {
-    await inventoryService.removeProduct(req.params.id, req.user);
-    res.json({ success: true, message: 'Product deleted' });
+    const result = await inventoryService.removeProduct(req.params.id, req.user);
+    res.json({ success: true, ...result });
   } catch (err) {
     if (err.message === 'Product not found') return res.status(404).json({ success: false, message: err.message });
     next(err);
@@ -188,6 +188,17 @@ async function createStock(req, res, next) {
     res.status(201).json({ success: true, data });
   } catch (err) {
     if (err.message === 'Product not found') return res.status(404).json({ success: false, message: err.message });
+    next(err);
+  }
+}
+
+async function bulkImportStock(req, res, next) {
+  try {
+    const stocks = Array.isArray(req.body.stocks) ? req.body.stocks : req.body;
+    const data = await inventoryService.bulkImportStock(stocks, req.user);
+    res.status(201).json({ success: true, data });
+  } catch (err) {
+    if (err.message === 'No stocks to import') return res.status(400).json({ success: false, message: err.message });
     next(err);
   }
 }
@@ -499,6 +510,7 @@ module.exports = {
   listStock,
   listStockByClient,
   createStock,
+  bulkImportStock,
   updateStock,
   removeStock,
   listStockByBestBeforeDate,

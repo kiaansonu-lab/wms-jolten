@@ -484,6 +484,11 @@ async function generatePoPdf(id, reqUser) {
   const { Company: CompanyModel, Customer: CustomerModel } = require('../models');
   const company = await CompanyModel.findByPk(po.companyId);
 
+  // Fetch supplier products to resolve actual mapped Supplier SKU
+  const supplierMappings = await SupplierProduct.findAll({
+    where: { companyId: po.companyId, supplierId: po.supplierId }
+  });
+
   const axios = require('axios');
   const doc = new PDFDocument({ size: 'A4', margin: 40 });
   const buffers = [];
@@ -528,10 +533,10 @@ async function generatePoPdf(id, reqUser) {
 
       if (fs.existsSync(tempFilePath)) {
         if (po.Client?.header_image_url) {
-          // If it's a professional client header, render as a banner but limited height to avoid overlap
-          doc.image(tempFilePath, 40, 15, { fit: [515, 70] });
+          // Render professional client letterhead at full printable margin width with a bounded banner height
+          doc.image(tempFilePath, 40, 15, { width: 515, height: 75 });
           logoLoaded = true;
-          currentY = 95;
+          currentY = 100;
         } else {
           // Fallback company logo
           doc.image(tempFilePath, 40, 15, { fit: [120, 60] });
@@ -561,7 +566,7 @@ async function generatePoPdf(id, reqUser) {
   }
 
   // Ensure plenty of gap below the logo and company info
-  currentY = Math.max(logoLoaded ? (po.Client?.header_image_url ? 110 : 105) : 80, doc.y + 20);
+  currentY = Math.max(logoLoaded ? (po.Client?.header_image_url ? 105 : 105) : 80, doc.y + 20);
 
   // Clean separator line
   doc.moveTo(40, currentY).lineTo(555, currentY).strokeColor('#eeeeee').lineWidth(1).stroke();
@@ -641,10 +646,17 @@ async function generatePoPdf(id, reqUser) {
     totalNet += lineNet;
     totalVat += lineVat;
 
-    let sSku = item.productSku || '-';
-    let iSku = item.Product?.sku || '-';
-    if (sSku === iSku && sSku !== '-') {
-      iSku = '-';
+    const mapping = supplierMappings.find(m => Number(m.productId) === Number(item.productId));
+    let sSku = '-';
+    let iSku = item.Product?.sku || item.productSku || '-';
+
+    if (mapping) {
+      sSku = mapping.supplierSku || '-';
+    } else {
+      sSku = item.productSku || '-';
+      if (sSku === iSku) {
+        sSku = '-';
+      }
     }
 
     const rowY = doc.y;

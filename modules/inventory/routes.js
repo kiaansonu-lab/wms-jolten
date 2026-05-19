@@ -32,6 +32,7 @@ router.get('/bb-date', requireClient, inventoryController.listStockByBestBeforeD
 router.get('/stock/by-best-before-date', requireClient, inventoryController.listStockByBestBeforeDate);
 router.get('/stock/by-location', requireClient, inventoryController.listStockByLocation);
 router.post('/stock', requireStaff, inventoryController.createStock);
+router.post('/stock/bulk', requireStaff, inventoryController.bulkImportStock);
 router.put('/stock/:id', requireStaff, inventoryController.updateStock);
 router.delete('/stock/:id', requireAdmin, inventoryController.removeStock);
 

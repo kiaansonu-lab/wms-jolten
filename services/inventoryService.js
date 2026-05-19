@@ -612,9 +612,29 @@ async function removeProduct(id, reqUser) {
   const product = await Product.findByPk(id);
   if (!product) throw new Error('Product not found');
   if (reqUser.role !== 'super_admin' && product.companyId !== reqUser.companyId) throw new Error('Product not found');
-  await ProductStock.destroy({ where: { productId: id } });
-  await product.destroy();
-  return { message: 'Product deleted' };
+
+  try {
+    await sequelize.transaction(async (t) => {
+      await ProductStock.destroy({ where: { productId: id }, transaction: t });
+      await product.destroy({ transaction: t });
+    });
+    return { message: 'Product deleted successfully' };
+  } catch (err) {
+    const errMsg = (err.message || '').toLowerCase();
+    if (
+      err.name === 'SequelizeForeignKeyConstraintError' || 
+      errMsg.includes('foreign key') || 
+      errMsg.includes('parent row') ||
+      errMsg.includes('constraint')
+    ) {
+      await product.update({ status: 'INACTIVE' });
+      return {
+        message: 'Product is linked to orders, receipts, or historical transactions. It has been deactivated (marked INACTIVE) instead.',
+        deactivated: true
+      };
+    }
+    throw err;
+  }
 }
 
 async function createCategory(data, reqUser) {
@@ -1981,19 +2001,21 @@ async function transferStock(data, reqUser) {
     }
 
     // 2. Add/Find Destination
+    // Unique stock is defined by: Product, Location, Batch, BB Date, and Client.
+    // If any of these differ, a new stock entry is created rather than consolidating.
     const [dest, created] = await ProductStock.findOrCreate({
       where: {
         productId,
         warehouseId: toWarehouseId,
         locationId: toLocationId,
-        batchNumber: batchNumber || source.batchNumber || null
+        batchNumber: batchNumber || source.batchNumber || null,
+        bestBeforeDate: bestBeforeDate || source.bestBeforeDate || null,
+        clientId: clientId || source.clientId || null
       },
       defaults: {
         companyId: product.companyId,
         quantity: 0,
         reserved: 0,
-        clientId: clientId || source.clientId,
-        bestBeforeDate: bestBeforeDate || source.bestBeforeDate,
         status: 'ACTIVE'
       },
       transaction: t
@@ -2307,6 +2329,253 @@ async function shipStock(data, t) {
   return { success: true };
 }
 
+async function bulkImportStock(stocksArray, reqUser) {
+  if (reqUser.role !== 'super_admin' && reqUser.role !== 'company_admin' && reqUser.role !== 'inventory_manager' && reqUser.role !== 'warehouse_manager') {
+    throw new Error('Not allowed to import inventory');
+  }
+  const companyId = reqUser.companyId;
+  if (!companyId) throw new Error('Company context required');
+  if (!Array.isArray(stocksArray) || stocksArray.length === 0) {
+    throw new Error('No stocks to import');
+  }
+
+  const { Product, ProductStock, Warehouse, Zone, Location, Customer, Inventory, InventoryLog, sequelize } = require('../models');
+  const results = { successCount: 0, failedCount: 0, errors: [] };
+
+  // Pre-load all entities for the company to avoid database roundtrips inside the loop
+  const products = await Product.findAll({ where: { companyId } });
+  const warehouses = await Warehouse.findAll({ where: { companyId } });
+  const customers = await Customer.findAll({ where: { companyId } });
+  
+  const zones = await Zone.findAll({ where: { companyId } });
+  const zoneIds = zones.map(z => z.id);
+  const locations = await Location.findAll({
+    where: {
+      zoneId: { [Op.in]: zoneIds }
+    },
+    include: [{ association: 'Zone' }]
+  });
+
+  const productMapBySku = new Map();
+  const productMapByName = new Map();
+  products.forEach(p => {
+    productMapBySku.set(p.sku.toLowerCase().trim(), p);
+    productMapByName.set(p.name.toLowerCase().trim(), p);
+  });
+
+  const warehouseMapByName = new Map();
+  const warehouseMapByCode = new Map();
+  warehouses.forEach(w => {
+    warehouseMapByName.set(w.name.toLowerCase().trim(), w);
+    warehouseMapByCode.set(w.code.toLowerCase().trim(), w);
+  });
+
+  const customerMapByName = new Map();
+  const customerMapByCode = new Map();
+  customers.forEach(c => {
+    customerMapByName.set(c.name.toLowerCase().trim(), c);
+    if (c.code) {
+      customerMapByCode.set(c.code.toLowerCase().trim(), c);
+    }
+  });
+
+  const locationMap = new Map();
+  locations.forEach(l => {
+    const whId = l.Zone?.warehouseId;
+    if (whId) {
+      if (l.code) locationMap.set(`${whId}-${l.code.toLowerCase().trim()}`, l);
+      if (l.name) locationMap.set(`${whId}-${l.name.toLowerCase().trim()}`, l);
+    }
+  });
+
+  for (let i = 0; i < stocksArray.length; i++) {
+    const row = stocksArray[i];
+    let transaction = null;
+    try {
+      // 1. Resolve Product
+      const prodSearch = String(row.product || row.sku || '').toLowerCase().trim();
+      let product = productMapBySku.get(prodSearch) || productMapByName.get(prodSearch);
+      if (!product) {
+        throw new Error(`Product SKU/Name "${row.product || row.sku || ''}" not found`);
+      }
+
+      // 2. Resolve Warehouse
+      const whSearch = String(row.warehouse || '').toLowerCase().trim();
+      let warehouse = warehouseMapByCode.get(whSearch) || warehouseMapByName.get(whSearch);
+      if (!warehouse) {
+        throw new Error(`Warehouse "${row.warehouse || ''}" not found`);
+      }
+
+      // 3. Resolve Location
+      const locSearch = String(row.location || '').toLowerCase().trim();
+      let location = null;
+      if (locSearch) {
+        location = locationMap.get(`${warehouse.id}-${locSearch}`);
+        if (!location) {
+          throw new Error(`Location "${row.location}" not found in warehouse "${warehouse.name}"`);
+        }
+      } else {
+        throw new Error(`Location is mandatory to ensure stock tracking per bin`);
+      }
+
+      // 4. Resolve Client (Customer)
+      const clientSearch = String(row.client || row.Client || '').toLowerCase().trim();
+      let client = null;
+      if (clientSearch) {
+        client = customerMapByCode.get(clientSearch) || customerMapByName.get(clientSearch);
+        if (!client) {
+          throw new Error(`Client/Customer "${row.client || row.Client || ''}" not found`);
+        }
+      } else {
+        throw new Error(`Client is mandatory for stock movement mapping`);
+      }
+
+      // 5. Parse Quantity
+      const rawQty = parseInt(row.quantity, 10);
+      if (isNaN(rawQty)) {
+        throw new Error(`Invalid Quantity "${row.quantity}"`);
+      }
+      const qty = Math.abs(rawQty);
+      if (qty === 0) {
+        throw new Error('Quantity cannot be zero');
+      }
+
+      const type = rawQty > 0 ? 'INCREASE' : 'DECREASE';
+
+      // 6. Validation for Perishable / Batch Tracking
+      const requireBatchTracking = String(product.requireBatchTracking || '').toLowerCase() === 'yes' || product.requireBatchTracking === true || String(product.requireBatchTracking) === '1';
+      const perishable = String(product.perishable || product.isPerishable || '').toLowerCase() === 'yes' || product.perishable === true || String(product.perishable) === '1';
+
+      let batchNumber = row.batchNumber || row.batchId || row.BatchId || row['Batch Number'] || row['Batch ID'] || null;
+      if (batchNumber) batchNumber = String(batchNumber).trim();
+
+      if (requireBatchTracking && !batchNumber) {
+        throw new Error(`Product "${product.sku}" requires a Batch Number for accurate tracking`);
+      }
+
+      let bestBeforeDate = row.bestBeforeDate || row.bbDate || row['BB Date'] || row['Best Before Date'] || null;
+      if (bestBeforeDate) {
+        const dateStr = String(bestBeforeDate).trim();
+        const dmyMatch = dateStr.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+        if (dmyMatch) {
+          bestBeforeDate = `${dmyMatch[3]}-${dmyMatch[2].padStart(2, '0')}-${dmyMatch[1].padStart(2, '0')}`;
+        } else {
+          const parsed = new Date(dateStr);
+          if (isNaN(parsed.getTime())) {
+            bestBeforeDate = null;
+          } else {
+            bestBeforeDate = parsed.toISOString().slice(0, 10);
+          }
+        }
+      }
+
+      if (perishable && !bestBeforeDate) {
+        throw new Error(`Perishable product "${product.sku}" requires a Best Before Date`);
+      }
+
+      // Check Heat Sensitive placement
+      if (type === 'INCREASE' && String(product.heatSensitive || '').toLowerCase() === 'yes') {
+        if (location.heatSensitive !== 'yes') {
+          throw new Error(`Heat-sensitive product "${product.sku}" can only be booked to heat-sensitive locations`);
+        }
+      }
+
+      transaction = await sequelize.transaction();
+
+      const referenceNumber = 'BULK-' + Buffer.from(Date.now().toString(36) + Math.random().toString(36).slice(2)).toString('base64').replace(/[/+=]/g, '').slice(0, 8).toUpperCase();
+
+      // Find or create exact stock record for this combination
+      const stockWhere = {
+        productId: product.id,
+        warehouseId: warehouse.id,
+        locationId: location.id,
+        batchNumber: batchNumber ? String(batchNumber).trim() : null,
+        bestBeforeDate: bestBeforeDate || null,
+        clientId: client.id
+      };
+
+      let stock = await ProductStock.findOne({ where: stockWhere, transaction });
+
+      if (type === 'DECREASE') {
+        if (!stock || (stock.quantity || 0) - (stock.reserved || 0) < qty) {
+          throw new Error(`Insufficient available stock for this combination (${product.sku} at ${warehouse.name} ${location.name})`);
+        }
+      }
+
+      // 1. Update ProductStock
+      if (stock) {
+        if (type === 'INCREASE') {
+          await stock.increment('quantity', { by: qty, transaction });
+        } else {
+          await stock.decrement('quantity', { by: qty, transaction });
+        }
+        await stock.update({
+          userId: reqUser.id,
+          reason: `Bulk CSV adjustment (${type})`
+        }, { transaction });
+      } else if (type === 'INCREASE') {
+        await ProductStock.create({
+          companyId,
+          productId: product.id,
+          warehouseId: warehouse.id,
+          locationId: location.id,
+          batchNumber,
+          quantity: qty,
+          reserved: 0,
+          bestBeforeDate,
+          clientId: client.id,
+          userId: reqUser.id,
+          reason: 'Bulk CSV Import',
+          status: 'ACTIVE',
+        }, { transaction });
+      }
+
+      // 2. Sync Warehouse Level Total (Inventory Table)
+      const [inv] = await Inventory.findOrCreate({
+        where: { productId: product.id, warehouseId: warehouse.id },
+        defaults: { quantity: 0, reservedQuantity: 0 },
+        transaction
+      });
+      if (type === 'INCREASE') {
+        await inv.increment('quantity', { by: qty, transaction });
+      } else {
+        await inv.decrement('quantity', { by: qty, transaction });
+      }
+
+      // 3. Create Entry in InventoryLog for history
+      await InventoryLog.create({
+        productId: product.id,
+        warehouseId: warehouse.id,
+        locationId: location.id,
+        batchNumber,
+        bestBeforeDate,
+        clientId: client.id,
+        userId: reqUser.id,
+        type: type === 'INCREASE' ? 'IN' : 'OUT',
+        quantity: qty,
+        reason: `Bulk Import ${type === 'INCREASE' ? 'Stock In' : 'Stock Out'}`,
+        referenceId: referenceNumber
+      }, { transaction });
+
+      await transaction.commit();
+      results.successCount++;
+    } catch (err) {
+      if (transaction) await transaction.rollback();
+      results.failedCount++;
+      results.errors.push({
+        row: i + 2, // 1-based, +1 for header
+        product: row.product || row.sku || '',
+        warehouse: row.warehouse || '',
+        location: row.location || '',
+        quantity: row.quantity || 0,
+        message: err.message || 'Import failed'
+      });
+    }
+  }
+
+  return results;
+}
+
 // Standard Exports
 const inventoryService = {
   listProducts,
@@ -2352,6 +2621,7 @@ const inventoryService = {
   unreserveStock,
   shipStock,
   exportProductsCsv,
+  bulkImportStock,
 };
 
 module.exports = inventoryService;
