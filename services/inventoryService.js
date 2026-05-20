@@ -174,7 +174,7 @@ async function listProducts(reqUser, query = {}) {
       { association: 'Company', attributes: ['id', 'name', 'code'], required: false },
       {
         association: 'ProductStocks',
-        attributes: ['quantity', 'reserved', 'warehouseId'],
+        attributes: ['quantity', 'reserved', 'warehouseId', 'clientId'],
         required: false,
         include: [{ association: 'Warehouse', attributes: ['id', 'name'], required: false }]
       },
@@ -1044,16 +1044,29 @@ async function createAdjustment(data, reqUser) {
     if (stock) {
       if (type === 'INCREASE') {
         await stock.increment('quantity', { by: qty, transaction });
+        // Update metadata fields
+        await stock.update({
+          bestBeforeDate: bestBeforeDate || stock.bestBeforeDate,
+          clientId: clientId || stock.clientId,
+          userId: reqUser.id,
+          reason: data.reason || stock.reason
+        }, { transaction });
       } else {
         await stock.decrement('quantity', { by: qty, transaction });
+        // Auto-delete zero-quantity rows so ghost records don't linger in inventory
+        await stock.reload({ transaction });
+        if ((Number(stock.quantity) || 0) <= 0) {
+          await stock.destroy({ transaction });
+        } else {
+          // Update metadata fields only if row survived
+          await stock.update({
+            bestBeforeDate: bestBeforeDate || stock.bestBeforeDate,
+            clientId: clientId || stock.clientId,
+            userId: reqUser.id,
+            reason: data.reason || stock.reason
+          }, { transaction });
+        }
       }
-      // Update metadata fields
-      await stock.update({
-        bestBeforeDate: bestBeforeDate || stock.bestBeforeDate,
-        clientId: clientId || stock.clientId,
-        userId: reqUser.id,
-        reason: data.reason || stock.reason
-      }, { transaction });
     } else if (type === 'INCREASE') {
       await ProductStock.create({
         companyId: effectiveCompanyId,
@@ -1665,6 +1678,11 @@ async function createMovement(data, reqUser) {
         throw new Error(`Insufficient stock at location ${loc.name || loc.code}`);
       }
       await stock.decrement('quantity', { by: q, transaction });
+      // Auto-delete zero-quantity rows after movement so empty records don't persist
+      await stock.reload({ transaction });
+      if ((Number(stock.quantity) || 0) <= 0) {
+        await stock.destroy({ transaction });
+      }
     };
 
     if (type === 'RECEIVE' || type === 'RETURN') {
@@ -2029,6 +2047,11 @@ async function transferStock(data, reqUser) {
       if (rowQty <= 0) continue;
       const consume = Math.min(rowQty, remaining);
       await row.decrement('quantity', { by: consume, transaction: t });
+      // Auto-delete zero-quantity source rows after transfer
+      await row.reload({ transaction: t });
+      if ((Number(row.quantity) || 0) <= 0) {
+        await row.destroy({ transaction: t });
+      }
       remaining -= consume;
     }
     await dest.increment('quantity', { by: qty, transaction: t });

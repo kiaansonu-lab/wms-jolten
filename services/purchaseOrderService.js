@@ -598,14 +598,12 @@ async function generatePoPdf(id, reqUser) {
   // --- TABLE HEADERS ---
   const tableTop = doc.y;
   doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#444444');
-  doc.text('Supplier SKU', 40, tableTop, { width: 65, lineBreak: false });
-  doc.text('Internal SKU', 105, tableTop, { width: 65, lineBreak: false });
-  doc.text('Product Name', 170, tableTop, { width: 105, lineBreak: false });
-  doc.text('Pack Size', 275, tableTop, { width: 45, align: 'center', lineBreak: false });
-  doc.text('Ordered Cases', 325, tableTop, { width: 60, align: 'right', lineBreak: false });
-  doc.text('Total Singles', 385, tableTop, { width: 60, align: 'right', lineBreak: false });
-  doc.text('Case Cost', 450, tableTop, { width: 55, align: 'right', lineBreak: false });
-  doc.text('Net Total', 510, tableTop, { width: 60, align: 'right', lineBreak: false });
+  doc.text('Supplier SKU', 40, tableTop, { width: 80, lineBreak: false });
+  doc.text('Product Name', 130, tableTop, { width: 210, lineBreak: false });
+  doc.text('Pack Size', 350, tableTop, { width: 45, align: 'center', lineBreak: false });
+  doc.text('Ordered Cases', 405, tableTop, { width: 60, align: 'right', lineBreak: false });
+  doc.text('Case Cost', 470, tableTop, { width: 50, align: 'right', lineBreak: false });
+  doc.text('Net Total', 525, tableTop, { width: 45, align: 'right', lineBreak: false });
 
   doc.moveTo(40, tableTop + 14).lineTo(570, tableTop + 14).strokeColor('#000000').lineWidth(0.5).stroke();
   doc.y = tableTop + 20;
@@ -618,14 +616,12 @@ async function generatePoPdf(id, reqUser) {
       doc.addPage();
       // headers on new page
       doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#444444');
-      doc.text('Supplier SKU', 40, 40, { width: 65, lineBreak: false });
-      doc.text('Internal SKU', 105, 40, { width: 65, lineBreak: false });
-      doc.text('Product Name', 170, 40, { width: 105, lineBreak: false });
-      doc.text('Pack Size', 275, 40, { width: 45, align: 'center', lineBreak: false });
-      doc.text('Ordered Cases', 325, 40, { width: 60, align: 'right', lineBreak: false });
-      doc.text('Total Singles', 385, 40, { width: 60, align: 'right', lineBreak: false });
-      doc.text('Case Cost', 450, 40, { width: 55, align: 'right', lineBreak: false });
-      doc.text('Net Total', 510, 40, { width: 60, align: 'right', lineBreak: false });
+      doc.text('Supplier SKU', 40, 40, { width: 80, lineBreak: false });
+      doc.text('Product Name', 130, 40, { width: 210, lineBreak: false });
+      doc.text('Pack Size', 350, 40, { width: 45, align: 'center', lineBreak: false });
+      doc.text('Ordered Cases', 405, 40, { width: 60, align: 'right', lineBreak: false });
+      doc.text('Case Cost', 470, 40, { width: 50, align: 'right', lineBreak: false });
+      doc.text('Net Total', 525, 40, { width: 45, align: 'right', lineBreak: false });
       doc.moveTo(40, 54).lineTo(570, 54).strokeColor('#000000').lineWidth(0.5).stroke();
       doc.y = 60;
     }
@@ -662,14 +658,12 @@ async function generatePoPdf(id, reqUser) {
     const rowY = doc.y;
     doc.fontSize(7).font('Helvetica').fillColor('#000000');
 
-    doc.text(sSku, 40, rowY, { width: 65, ellipsis: true });
-    doc.text(iSku, 105, rowY, { width: 65, ellipsis: true });
-    doc.text(item.productName || '-', 170, rowY, { width: 110, ellipsis: true });
-    doc.text(String(packSize), 280, rowY, { width: 35, align: 'center' });
-    doc.text(orderedCases % 1 === 0 ? String(orderedCases) : orderedCases.toFixed(2), 315, rowY, { width: 60, align: 'right' });
-    doc.text(String(qtySingles), 375, rowY, { width: 60, align: 'right' });
-    doc.text(`£${caseCost.toFixed(2)}`, 445, rowY, { width: 55, align: 'right' });
-    doc.text(`£${lineNet.toFixed(2)}`, 510, rowY, { width: 60, align: 'right' });
+    doc.text(sSku, 40, rowY, { width: 80, ellipsis: true });
+    doc.text(item.productName || '-', 130, rowY, { width: 210, ellipsis: true });
+    doc.text(String(packSize), 350, rowY, { width: 45, align: 'center' });
+    doc.text(orderedCases % 1 === 0 ? String(orderedCases) : orderedCases.toFixed(2), 405, rowY, { width: 60, align: 'right' });
+    doc.text(`£${caseCost.toFixed(2)}`, 470, rowY, { width: 50, align: 'right' });
+    doc.text(`£${lineNet.toFixed(2)}`, 525, rowY, { width: 45, align: 'right' });
 
     doc.y = rowY + 15;
   }
