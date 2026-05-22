@@ -790,22 +790,63 @@ async function updateStock(stockId, data, reqUser) {
   }
   if (stock.Product.companyId !== reqUser.companyId && reqUser.role !== 'super_admin') throw new Error('Stock not found');
 
-  if (data.quantity !== undefined && data.quantity > stock.quantity) {
+  const oldQty = Number(stock.quantity) || 0;
+  const oldRes = Number(stock.reserved) || 0;
+  const oldProductId = stock.productId;
+  const oldWarehouseId = stock.warehouseId;
+
+  const newQty = data.quantity !== undefined ? Number(data.quantity) : oldQty;
+  const newRes = data.reserved !== undefined ? Number(data.reserved) : oldRes;
+  const newProductId = data.productId !== undefined ? data.productId : oldProductId;
+  const newWarehouseId = data.warehouseId !== undefined ? data.warehouseId : oldWarehouseId;
+
+  if (newQty > oldQty || oldWarehouseId !== newWarehouseId) {
     const warehouseService = require('./warehouseService');
-    await warehouseService.validateCapacity(stock.warehouseId, data.quantity - stock.quantity);
+    const qtyToAdd = oldWarehouseId === newWarehouseId ? newQty - oldQty : newQty;
+    await warehouseService.validateCapacity(newWarehouseId, qtyToAdd);
   }
 
-  await stock.update({
-    quantity: data.quantity !== undefined ? data.quantity : stock.quantity,
-    reserved: data.reserved !== undefined ? data.reserved : stock.reserved,
-    locationId: data.locationId !== undefined ? data.locationId : stock.locationId,
-    status: data.status !== undefined ? data.status : stock.status,
-    lotNumber: data.lotNumber !== undefined ? data.lotNumber : stock.lotNumber,
-    batchNumber: data.batchNumber !== undefined ? data.batchNumber : stock.batchNumber,
-    serialNumber: data.serialNumber !== undefined ? data.serialNumber : stock.serialNumber,
-    bestBeforeDate: data.bestBeforeDate !== undefined ? data.bestBeforeDate : stock.bestBeforeDate,
-  });
-  return stock;
+  const transaction = await sequelize.transaction();
+  try {
+    if (oldProductId !== newProductId || oldWarehouseId !== newWarehouseId || oldQty !== newQty || oldRes !== newRes) {
+      const { Inventory } = require('../models');
+
+      // Decrement from old combination
+      const [oldInv] = await Inventory.findOrCreate({
+        where: { productId: oldProductId, warehouseId: oldWarehouseId },
+        defaults: { quantity: 0, reservedQuantity: 0 },
+        transaction
+      });
+      await oldInv.decrement({ quantity: oldQty, reservedQuantity: oldRes }, { transaction });
+
+      // Increment to new combination
+      const [newInv] = await Inventory.findOrCreate({
+        where: { productId: newProductId, warehouseId: newWarehouseId },
+        defaults: { quantity: 0, reservedQuantity: 0 },
+        transaction
+      });
+      await newInv.increment({ quantity: newQty, reservedQuantity: newRes }, { transaction });
+    }
+
+    await stock.update({
+      productId: newProductId,
+      warehouseId: newWarehouseId,
+      quantity: newQty,
+      reserved: newRes,
+      locationId: data.locationId !== undefined ? data.locationId : stock.locationId,
+      status: data.status !== undefined ? data.status : stock.status,
+      lotNumber: data.lotNumber !== undefined ? data.lotNumber : stock.lotNumber,
+      batchNumber: data.batchNumber !== undefined ? data.batchNumber : stock.batchNumber,
+      serialNumber: data.serialNumber !== undefined ? data.serialNumber : stock.serialNumber,
+      bestBeforeDate: data.bestBeforeDate !== undefined ? data.bestBeforeDate : stock.bestBeforeDate,
+    }, { transaction });
+
+    await transaction.commit();
+    return stock;
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  }
 }
 
 async function removeStock(stockId, reqUser) {
