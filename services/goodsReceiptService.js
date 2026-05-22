@@ -214,15 +214,39 @@ async function updateAsnItems(id, body, reqUser) {
   await gr.save();
 
   if (Array.isArray(body.items)) {
+    const existingIds = gr.GoodsReceiptItems.map(i => i.id);
+    const updatedIds = body.items.filter(i => i.id).map(i => i.id);
+    const toDeleteIds = existingIds.filter(itemId => !updatedIds.includes(itemId));
+    
+    if (toDeleteIds.length > 0) {
+      await GoodsReceiptItem.destroy({ where: { id: toDeleteIds } });
+    }
+
     for (const item of body.items) {
-      const dbItem = gr.GoodsReceiptItems.find(i => i.id === item.id);
-      if (dbItem) {
-        await dbItem.update({
-          batchId: item.batchId || dbItem.batchId,
-          bestBeforeDate: item.bestBeforeDate || dbItem.bestBeforeDate,
-          qtyToBook: item.qtyToBook ?? dbItem.qtyToBook,
-          locationId: item.locationId || dbItem.locationId,
-          qualityStatus: item.qualityStatus || dbItem.qualityStatus
+      if (item.id) {
+        const dbItem = gr.GoodsReceiptItems.find(i => i.id === item.id);
+        if (dbItem) {
+          await dbItem.update({
+            batchId: item.batchId || dbItem.batchId,
+            bestBeforeDate: item.bestBeforeDate || dbItem.bestBeforeDate,
+            qtyToBook: item.qtyToBook ?? dbItem.qtyToBook,
+            locationId: item.locationId || dbItem.locationId,
+            qualityStatus: item.qualityStatus || dbItem.qualityStatus
+          });
+        }
+      } else {
+        await GoodsReceiptItem.create({
+          goodsReceiptId: gr.id,
+          productId: item.productId,
+          productName: item.productName || null,
+          productSku: item.productSku || null,
+          expectedQty: 0,
+          receivedQty: 0,
+          qtyToBook: item.qtyToBook || 0,
+          batchId: item.batchId || null,
+          bestBeforeDate: item.bestBeforeDate || null,
+          locationId: item.locationId || null,
+          qualityStatus: item.qualityStatus || 'GOOD'
         });
       }
     }

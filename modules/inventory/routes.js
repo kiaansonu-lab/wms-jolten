@@ -17,6 +17,7 @@ router.get('/scan/:barcode', requireClient, inventoryController.scanBarcode);
 router.get('/products/:id', requireClient, inventoryController.getProduct);
 router.post('/products', requireAdmin, inventoryController.createProduct);
 router.post('/products/bulk', requireAdmin, inventoryController.bulkCreateProducts);
+router.post('/products/bulk-action', requireAdmin, inventoryController.bulkActionProducts);
 router.post('/products/:id/alternative-skus', requireAdmin, inventoryController.addAlternativeSku);
 router.put('/products/:id', requireAdmin, inventoryController.updateProduct);
 router.delete('/products/:id', requireAdmin, inventoryController.removeProduct);

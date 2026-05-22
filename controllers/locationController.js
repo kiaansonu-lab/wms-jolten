@@ -94,5 +94,17 @@ async function bulkUpload(req, res, next) {
   }
 }
 
-module.exports = { list, getById, create, update, remove, bulkUpload };
+async function bulkAction(req, res, next) {
+  try {
+    const { action, locationIds } = req.body;
+    if (!action || !Array.isArray(locationIds) || locationIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Action and locationIds array are required' });
+    }
+    const data = await locationService.bulkAction(action, locationIds, req.user);
+    res.json({ success: true, ...data });
+  } catch (err) {
+    next(err);
+  }
+}
 
+module.exports = { list, getById, create, update, remove, bulkUpload, bulkAction };

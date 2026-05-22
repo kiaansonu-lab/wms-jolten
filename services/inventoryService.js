@@ -2599,6 +2599,42 @@ async function bulkImportStock(stocksArray, reqUser) {
   return results;
 }
 
+async function bulkActionProducts(action, productIds, reqUser) {
+  if (reqUser.role !== 'super_admin' && reqUser.role !== 'company_admin' && reqUser.role !== 'inventory_manager') {
+    throw new Error('Not allowed to perform bulk actions');
+  }
+
+  const whereClause = { id: { [Op.in]: productIds } };
+  if (reqUser.role !== 'super_admin') {
+    whereClause.companyId = reqUser.companyId;
+  }
+
+  if (action === 'DELETE') {
+    let deletedCount = 0;
+    let deactivatedCount = 0;
+    const products = await Product.findAll({ where: whereClause });
+    
+    for (const product of products) {
+      try {
+        await sequelize.transaction(async (t) => {
+          await ProductStock.destroy({ where: { productId: product.id }, transaction: t });
+          await product.destroy({ transaction: t });
+        });
+        deletedCount++;
+      } catch (err) {
+        await product.update({ status: 'INACTIVE' });
+        deactivatedCount++;
+      }
+    }
+    return { message: `Successfully deleted ${deletedCount} products. Deactivated ${deactivatedCount} products due to linked records.` };
+  } else if (action === 'Mark Discontinued') {
+    const updatedCount = await Product.update({ status: 'INACTIVE' }, { where: whereClause });
+    return { message: `Successfully marked ${updatedCount[0]} products as discontinued (INACTIVE).` };
+  } else {
+    throw new Error('Invalid bulk action');
+  }
+}
+
 // Standard Exports
 const inventoryService = {
   listProducts,
@@ -2607,6 +2643,7 @@ const inventoryService = {
   getProductById,
   createProduct,
   bulkCreateProducts,
+  bulkActionProducts,
   updateProduct,
   addAlternativeSku,
   removeProduct,

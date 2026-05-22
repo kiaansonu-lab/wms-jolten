@@ -12,11 +12,11 @@ function formatLocationName(data) {
   const parts = [data.aisle, data.rack, data.shelf, data.bin];
   const formatted = parts
     .filter(p => p != null && p !== '')
-    .map(p => p.toString().replace(/-/g, ''))
+    .map(p => p.toString().trim())
     .join('');
   
   if (formatted) return formatted;
-  return data.name ? data.name.replace(/-/g, '') : null;
+  return null;
 }
 
 async function list(reqUser, query = {}) {
@@ -67,7 +67,7 @@ async function create(data, reqUser) {
   
   return Location.create({
     zoneId: data.zoneId,
-    name: formattedName || data.name,
+    name: data.name || formattedName,
     code: data.code || null,
     aisle: data.aisle || null,
     rack: data.rack || null,
@@ -87,7 +87,7 @@ async function update(id, data, reqUser) {
   const formattedName = formatLocationName(data);
 
   await loc.update({
-    name: formattedName || data.name || loc.name,
+    name: data.name || formattedName || loc.name,
     code: data.code !== undefined ? data.code : loc.code,
     aisle: data.aisle !== undefined ? data.aisle : loc.aisle,
     rack: data.rack !== undefined ? data.rack : loc.rack,
@@ -386,7 +386,7 @@ async function bulkCreate(locationsData, reqUser) {
           heatSensitive: get(['heatsensitive', 'heat_sensitive', 'heat sensitive']),
         };
         
-        const locName = formatLocationName(normalized) || normalized.name;
+        const locName = normalized.name || formatLocationName(normalized);
         if (!locName) throw new Error(`Location name could not be generated from Aisle/Rack/Shelf/Bin.`);
 
         const batchKey = `${zoneId}-${locName.toLowerCase().trim()}`;
@@ -471,5 +471,34 @@ async function migrateExistingLocations() {
     }
 }
 
-module.exports = { list, getById, create, update, remove, bulkCreate, migrateExistingLocations };
+async function bulkAction(action, locationIds, reqUser) {
+  if (reqUser.role !== 'super_admin' && reqUser.role !== 'company_admin') {
+    throw new Error('Not allowed to perform bulk actions on locations');
+  }
+
+  if (action === 'DELETE') {
+    let deletedCount = 0;
+    let failedCount = 0;
+    
+    for (const id of locationIds) {
+      try {
+        const loc = await Location.findByPk(id);
+        if (loc) {
+          await loc.destroy();
+          deletedCount++;
+        }
+      } catch (err) {
+        failedCount++;
+      }
+    }
+    
+    let msg = `Successfully deleted ${deletedCount} locations.`;
+    if (failedCount > 0) msg += ` Failed to delete ${failedCount} locations (they might have stock assigned).`;
+    return { message: msg };
+  } else {
+    throw new Error('Invalid bulk action');
+  }
+}
+
+module.exports = { list, getById, create, update, remove, bulkCreate, bulkAction, migrateExistingLocations };
 

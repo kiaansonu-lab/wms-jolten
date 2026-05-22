@@ -84,6 +84,19 @@ async function bulkCreateProducts(req, res, next) {
   }
 }
 
+async function bulkActionProducts(req, res, next) {
+  try {
+    const { action, productIds } = req.body;
+    if (!action || !Array.isArray(productIds) || productIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Action and productIds array are required' });
+    }
+    const data = await inventoryService.bulkActionProducts(action, productIds, req.user);
+    res.json({ success: true, ...data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function updateProduct(req, res, next) {
   try {
     console.log(`[DEBUG] Update Product Payload ID=${req.params.id}:`, JSON.stringify(req.body, null, 2));
@@ -500,6 +513,7 @@ module.exports = {
   getProduct,
   createProduct,
   bulkCreateProducts,
+  bulkActionProducts,
   updateProduct,
   addAlternativeSku,
   removeProduct,
