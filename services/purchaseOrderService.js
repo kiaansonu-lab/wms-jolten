@@ -270,25 +270,21 @@ async function generateAsn(id, body, reqUser) {
     grNumber,
     status: 'pending',
     totalExpected: (po.PurchaseOrderItems || []).reduce((acc, i) => {
-      const ps = Number(i.packSize || 1);
-      const total = i.supplierQuantity > 0 ? Number(i.supplierQuantity) * ps : Number(i.quantity || 0);
-      return acc + total;
+      return acc + (Number(i.quantity) || 0);
     }, 0),
     totalReceived: 0,
     notes: body.notes || `ASN generated from ${po.poNumber}`,
   });
 
   const grItems = (po.PurchaseOrderItems || []).map(i => {
-    const ps = Number(i.packSize || 1);
-    const total = i.supplierQuantity > 0 ? Number(i.supplierQuantity) * ps : Number(i.quantity || 0);
     return {
       goodsReceiptId: gr.id,
       productId: i.productId,
       productName: i.productName,
       productSku: i.productSku,
-      expectedQty: total,
+      expectedQty: Number(i.quantity) || 0,
       receivedQty: 0,
-      qtyToBook: total,
+      qtyToBook: 0,
     };
   });
   if (grItems.length) await GoodsReceiptItem.bulkCreate(grItems);

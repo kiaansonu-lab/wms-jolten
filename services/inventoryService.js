@@ -174,9 +174,13 @@ async function listProducts(reqUser, query = {}) {
       { association: 'Company', attributes: ['id', 'name', 'code'], required: false },
       {
         association: 'ProductStocks',
-        attributes: ['quantity', 'reserved', 'warehouseId', 'clientId'],
+        attributes: ['id', 'quantity', 'reserved', 'warehouseId', 'locationId', 'clientId', 'bestBeforeDate', 'batchNumber', 'serialNumber', 'lotNumber', 'status', 'updatedAt'],
         required: false,
-        include: [{ association: 'Warehouse', attributes: ['id', 'name'], required: false }]
+        include: [
+          { association: 'Warehouse', attributes: ['id', 'name'], required: false },
+          { association: 'Location', attributes: ['id', 'name', 'code'], required: false },
+          { association: 'Client', attributes: ['id', 'name', 'code'], required: false }
+        ]
       },
       {
         association: 'SupplierProducts',

@@ -95,9 +95,7 @@ async function create(body, reqUser) {
   const grNumber = `GRN${String(nextNum).padStart(3, '0')}`;
 
   const totalExpected = (po.PurchaseOrderItems || []).reduce((acc, i) => {
-    const q = Number(i.supplierQuantity || i.quantity || 0);
-    const p = Number(i.packSize || 1);
-    return acc + (q * p);
+    return acc + (Number(i.quantity) || 0);
   }, 0);
 
   const gr = await GoodsReceipt.create({
@@ -217,7 +215,7 @@ async function updateAsnItems(id, body, reqUser) {
     const existingIds = gr.GoodsReceiptItems.map(i => i.id);
     const updatedIds = body.items.filter(i => i.id).map(i => i.id);
     const toDeleteIds = existingIds.filter(itemId => !updatedIds.includes(itemId));
-    
+
     if (toDeleteIds.length > 0) {
       await GoodsReceiptItem.destroy({ where: { id: toDeleteIds } });
     }
@@ -302,7 +300,7 @@ async function finalizeReceiving(id, reqUser) {
 
       // Check for over-receiving against PO line
       const poItem = po.PurchaseOrderItems.find(p => p.productId === item.productId);
-      if (!poItem) throw new Error(`Product ${item.productSku} not found in original Purchase Order`);
+      // Unexpected items are allowed, so we do not throw an error if !poItem.
 
       // 4.2 Heat-Sensitive Check (Relaxed to allow booking if location is selected)
       if (isTruthyYes(product.heatSensitive)) {
@@ -324,7 +322,7 @@ async function finalizeReceiving(id, reqUser) {
         transaction: t
       });
       const alreadyReceived = otherGrItems.reduce((sum, gi) => sum + (Number(gi.receivedQty) || 0), 0);
-      const remainingAllowed = Number(poItem.quantity) - alreadyReceived;
+      const remainingAllowed = poItem ? (Number(poItem.quantity) - alreadyReceived) : 0;
 
       // Allow over-receiving: Some users might receive more than ordered (bonus stock/samples)
       /*
@@ -335,8 +333,8 @@ async function finalizeReceiving(id, reqUser) {
 
       // 6. Manage Batch (if applicable)
       if (item.batchId) {
-        const poPackSize = Number(poItem.packSize) || Number(product.packSize) || 1;
-        const casePrice = Number(poItem.unitPrice) || 0;
+        const poPackSize = poItem ? (Number(poItem.packSize) || Number(product.packSize) || 1) : (Number(product.packSize) || 1);
+        const casePrice = poItem ? (Number(poItem.unitPrice) || 0) : 0;
         const unitCost = poPackSize > 0 ? (casePrice / poPackSize) : casePrice;
 
         console.log(`[GRN COST DEBUG] SKU: ${product.sku}, Case Price: ${casePrice}, Pack Size: ${poPackSize}, Unit Cost: ${unitCost}`);

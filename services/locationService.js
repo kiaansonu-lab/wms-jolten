@@ -1,4 +1,4 @@
-const { Location, Zone, Warehouse } = require('../models');
+const { Location, Zone, Warehouse, ProductStock } = require('../models');
 const { Op } = require('sequelize');
 
 function normalizeRole(role) {
@@ -49,7 +49,22 @@ async function list(reqUser, query = {}) {
     order: [['updatedAt', 'DESC'], ['createdAt', 'DESC']],
     include: [{ association: 'Zone', include: [{ association: 'Warehouse', attributes: ['id', 'name', 'code'] }] }],
   });
-  return locations.map(loc => (loc.get ? loc.get({ plain: true }) : loc));
+
+  const activeStockLocations = await ProductStock.findAll({
+    attributes: ['locationId'],
+    where: {
+      quantity: { [Op.gt]: 0 }
+    },
+    group: ['locationId'],
+    raw: true
+  });
+  const inUseLocationIds = new Set(activeStockLocations.map(s => s.locationId));
+
+  return locations.map(loc => {
+    const plain = loc.get ? loc.get({ plain: true }) : loc;
+    plain.status = inUseLocationIds.has(plain.id) ? 'In Use' : 'Empty';
+    return plain;
+  });
 }
 
 async function getById(id, reqUser) {
@@ -57,7 +72,17 @@ async function getById(id, reqUser) {
     include: [{ association: 'Zone', include: ['Warehouse'] }],
   });
   if (!loc) throw new Error('Location not found');
-  return loc;
+
+  const hasStock = await ProductStock.findOne({
+    where: {
+      locationId: id,
+      quantity: { [Op.gt]: 0 }
+    }
+  });
+
+  const plain = loc.get ? loc.get({ plain: true }) : loc;
+  plain.status = hasStock ? 'In Use' : 'Empty';
+  return plain;
 }
 
 async function create(data, reqUser) {
@@ -104,6 +129,18 @@ async function update(id, data, reqUser) {
 async function remove(id, reqUser) {
   const loc = await Location.findByPk(id);
   if (!loc) throw new Error('Location not found');
+
+  const hasStock = await ProductStock.findOne({
+    where: {
+      locationId: id,
+      quantity: { [Op.gt]: 0 }
+    }
+  });
+
+  if (hasStock) {
+    throw new Error('In Use location cannot be deleted.');
+  }
+
   await loc.destroy();
   return { message: 'Location deleted' };
 }
@@ -484,6 +521,16 @@ async function bulkAction(action, locationIds, reqUser) {
       try {
         const loc = await Location.findByPk(id);
         if (loc) {
+          const hasStock = await ProductStock.findOne({
+            where: {
+              locationId: id,
+              quantity: { [Op.gt]: 0 }
+            }
+          });
+          if (hasStock) {
+            failedCount++;
+            continue;
+          }
           await loc.destroy();
           deletedCount++;
         }
@@ -493,7 +540,7 @@ async function bulkAction(action, locationIds, reqUser) {
     }
     
     let msg = `Successfully deleted ${deletedCount} locations.`;
-    if (failedCount > 0) msg += ` Failed to delete ${failedCount} locations (they might have stock assigned).`;
+    if (failedCount > 0) msg += ` Failed to delete ${failedCount} locations (In Use locations cannot be deleted).`;
     return { message: msg };
   } else {
     throw new Error('Invalid bulk action');

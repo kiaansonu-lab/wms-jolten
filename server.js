@@ -342,6 +342,24 @@ async function start() {
     } catch (e) {
       console.warn('[DB] Backfill error:', e.message);
     }
+
+    // Reset pending GoodsReceiptItem qtyToBook to 0 on startup so they don't show as fully received
+    try {
+      const { GoodsReceipt, GoodsReceiptItem } = require('./models');
+      const { Op } = require('sequelize');
+      const pendingItems = await GoodsReceiptItem.findAll({
+        include: [{ association: 'GoodsReceipt', where: { status: 'pending' } }],
+        where: { qtyToBook: { [Op.gt]: 0 } }
+      });
+      if (pendingItems.length > 0) {
+        console.log(`[DB] Resetting qtyToBook to 0 for ${pendingItems.length} pending GoodsReceiptItems...`);
+        for (const item of pendingItems) {
+          await item.update({ qtyToBook: 0 });
+        }
+      }
+    } catch (e) {
+      console.warn('[DB] Reset pending qtyToBook error:', e.message);
+    }
     
     // AUTO-SEED DEMO USERS if they don't exist (For 'Proper' Live Demo Experience)
     const bcrypt = require('bcryptjs');
