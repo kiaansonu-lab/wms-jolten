@@ -40,6 +40,8 @@ const Product = sequelize.define('Product', {
   alternativeSkus: { type: DataTypes.JSON, allowNull: true },
   packSize: { type: DataTypes.INTEGER, defaultValue: 1 },
   bestBeforeDateWarningPeriodDays: { type: DataTypes.INTEGER, defaultValue: 0 },
+  defaultPickingLocationId: { type: DataTypes.INTEGER, allowNull: true },
+  isDiscontinued: { type: DataTypes.BOOLEAN, defaultValue: false },
 }, {
 
   tableName: 'products',

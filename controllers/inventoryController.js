@@ -449,6 +449,15 @@ async function listInventoryLogs(req, res, next) {
   }
 }
 
+async function listInventoryLedger(req, res, next) {
+  try {
+    const data = await inventoryService.listInventoryLedger(req.user, req.query);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function stockIn(req, res, next) {
   try {
     const companyId = req.user?.companyId;
@@ -546,6 +555,7 @@ module.exports = {
   removeMovement,
   listInventory,
   listInventoryLogs,
+  listInventoryLedger,
   stockIn,
   stockOut,
   transfer,

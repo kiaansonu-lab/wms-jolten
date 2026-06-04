@@ -8,6 +8,9 @@ const OrderItem = sequelize.define('OrderItem', {
   quantity: { type: DataTypes.INTEGER, allowNull: false },
   unitPrice: { type: DataTypes.DECIMAL(12, 2), defaultValue: 0 },
   warehouseId: { type: DataTypes.INTEGER, allowNull: true },
+  locationId: { type: DataTypes.INTEGER, allowNull: true },
+  batchNumber: { type: DataTypes.STRING, allowNull: true },
+  bestBeforeDate: { type: DataTypes.DATEONLY, allowNull: true },
 }, {
   tableName: 'order_items',
   timestamps: true,

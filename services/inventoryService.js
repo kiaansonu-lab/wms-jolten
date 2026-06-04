@@ -1372,6 +1372,23 @@ async function completeCycleCount(id, data, reqUser) {
         } else {
           await inv.decrement('quantity', { by: Math.abs(diff), transaction });
         }
+
+        // Create InventoryLog entry
+        const logType = diff > 0 ? 'IN' : 'OUT';
+        const logQty = Math.abs(diff);
+        const { InventoryLog } = require('../models');
+        await InventoryLog.create({
+          productId: pid,
+          warehouseId: where.warehouseId,
+          locationId: count.locationId,
+          batchNumber: p.batchNumber || null,
+          clientId: stock ? stock.clientId : null,
+          userId: reqUser.id,
+          type: logType,
+          quantity: logQty,
+          reason: `Cycle Count #${count.referenceNumber}`,
+          referenceId: count.referenceNumber
+        }, { transaction });
       }
     }
 
@@ -1867,6 +1884,250 @@ async function listInventoryLogs(reqUser, query = {}) {
     }
     return j;
   });
+}
+
+async function listInventoryLedger(reqUser, query = {}) {
+  const { InventoryLog, Product, Location, Customer, User, Warehouse } = require('../models');
+  const where = {};
+
+  // Date range filter
+  if (query.startDate || query.endDate) {
+    const dateCond = {};
+    if (query.startDate) dateCond[Op.gte] = new Date(query.startDate + 'T00:00:00');
+    if (query.endDate) dateCond[Op.lte] = new Date(query.endDate + 'T23:59:59');
+    where.createdAt = dateCond;
+  }
+
+  // Reference ID filter
+  if (query.referenceId) {
+    where.referenceId = { [Op.like]: `%${query.referenceId}%` };
+  }
+
+  // Warehouse filter
+  if (query.warehouseId) {
+    where.warehouseId = query.warehouseId;
+  }
+
+  // Event type filter
+  if (query.eventType && query.eventType !== 'all') {
+    if (query.eventType === 'Shipments') {
+      where.type = 'OUT';
+      where.reason = { [Op.or]: [
+        { [Op.like]: '%Shipment%' },
+        { [Op.like]: '%Sales Order%' },
+        { [Op.like]: '%Scan Out%' }
+      ]};
+    } else if (query.eventType === 'Receipts') {
+      where.type = 'IN';
+      where.reason = { [Op.or]: [
+        { [Op.like]: '%Receipt%' },
+        { [Op.like]: '%Purchase Order%' },
+        { [Op.like]: '%ASN%' },
+        { [Op.like]: '%Goods%' },
+        { [Op.like]: '%Scan In%' },
+        { [Op.like]: '%Manual Stock Creation%' },
+        { [Op.like]: '%Batch Creation%' }
+      ]};
+    } else if (query.eventType === 'WhseTransfers') {
+      where.type = 'TRANSFER';
+    } else if (query.eventType === 'Adjustments') {
+      where.reason = { [Op.or]: [
+        { [Op.like]: '%Adjustment%' },
+        { [Op.like]: '%Cycle Count%' },
+        { [Op.like]: '%Correction%' },
+        { [Op.like]: '%Manual Stock%' },
+        { [Op.like]: '%Bulk%' }
+      ]};
+    } else if (query.eventType === 'CustomerReturns') {
+      where.reason = {
+        [Op.and]: [
+          { [Op.like]: '%Return%' },
+          { [Op.notLike]: '%Vendor%' },
+          { [Op.notLike]: '%Supplier%' }
+        ]
+      };
+    } else if (query.eventType === 'VendorReturns') {
+      where.reason = {
+        [Op.or]: [
+          { [Op.like]: '%Vendor Return%' },
+          { [Op.like]: '%Supplier Return%' }
+        ]
+      };
+    }
+  }
+
+  // Disposition filter
+  if (query.disposition && query.disposition !== 'all') {
+    if (query.disposition === 'EXPIRED') {
+      where.reason = { [Op.like]: '%Expired%' };
+    } else if (query.disposition === 'CARRIER_DAMAGED') {
+      where.reason = { [Op.or]: [{ [Op.like]: '%Carrier Damaged%' }, { [Op.like]: '%Carrier_Damaged%' }] };
+    } else if (query.disposition === 'CUSTOMER_DAMAGED') {
+      where.reason = { [Op.or]: [{ [Op.like]: '%Customer Damaged%' }, { [Op.like]: '%Customer_Damaged%' }] };
+    } else if (query.disposition === 'DISTRIBUTOR_DAMAGED') {
+      where.reason = { [Op.or]: [{ [Op.like]: '%Distributor Damaged%' }, { [Op.like]: '%Distributor_Damaged%' }] };
+    } else if (query.disposition === 'WAREHOUSE_DAMAGED') {
+      where.reason = { [Op.or]: [{ [Op.like]: '%Warehouse Damaged%' }, { [Op.like]: '%Warehouse_Damaged%' }, { [Op.like]: '%Damaged%' }] };
+    } else if (query.disposition === 'DEFECTIVE') {
+      where.reason = { [Op.like]: '%Defective%' };
+    } else if (query.disposition === 'UNSELLABLE_OTHER') {
+      where.reason = { [Op.or]: [{ [Op.like]: '%Theft%' }, { [Op.like]: '%Waste%' }, { [Op.like]: '%Unsellable%' }] };
+    } else if (query.disposition === 'SELLABLE') {
+      where.reason = {
+        [Op.or]: [
+          { [Op.is]: null },
+          {
+            [Op.and]: [
+              { [Op.notLike]: '%Expired%' },
+              { [Op.notLike]: '%Carrier Damaged%' },
+              { [Op.notLike]: '%Carrier_Damaged%' },
+              { [Op.notLike]: '%Customer Damaged%' },
+              { [Op.notLike]: '%Customer_Damaged%' },
+              { [Op.notLike]: '%Distributor Damaged%' },
+              { [Op.notLike]: '%Distributor_Damaged%' },
+              { [Op.notLike]: '%Warehouse Damaged%' },
+              { [Op.notLike]: '%Warehouse_Damaged%' },
+              { [Op.notLike]: '%Damaged%' },
+              { [Op.notLike]: '%Defective%' },
+              { [Op.notLike]: '%Theft%' },
+              { [Op.notLike]: '%Waste%' },
+              { [Op.notLike]: '%Unsellable%' }
+            ]
+          }
+        ]
+      };
+    }
+  }
+
+  // Product filters
+  const productWhere = {};
+  if (reqUser.role !== 'super_admin' && reqUser.companyId) {
+    productWhere.companyId = reqUser.companyId;
+  }
+  if (query.search) {
+    productWhere[Op.or] = [
+      { sku: { [Op.like]: `%${query.search}%` } },
+      { name: { [Op.like]: `%${query.search}%` } },
+    ];
+  }
+  if (query.sku) {
+    productWhere.sku = { [Op.like]: `%${query.sku}%` };
+  }
+  if (query.asin) {
+    productWhere[Op.or] = [
+      { marketplaceSkus: { [Op.like]: `%"asin":"${query.asin}"%` } },
+      { marketplaceSkus: { [Op.like]: `%${query.asin}%` } }
+    ];
+  }
+  if (query.fnsku) {
+    productWhere[Op.or] = [
+      { marketplaceSkus: { [Op.like]: `%"fnsku":"${query.fnsku}"%` } },
+      { marketplaceSkus: { [Op.like]: `%${query.fnsku}%` } }
+    ];
+  }
+
+  // Pagination
+  const page = parseInt(query.page, 10) || 1;
+  const limit = parseInt(query.pageSize, 10) || 20;
+  const offset = (page - 1) * limit;
+
+  const { rows, count } = await InventoryLog.findAndCountAll({
+    where,
+    include: [
+      {
+        model: Product,
+        where: productWhere,
+        required: true,
+        attributes: ['id', 'name', 'sku', 'barcode', 'marketplaceSkus']
+      },
+      { association: 'Location', required: false, attributes: ['id', 'name', 'code'] },
+      { association: 'Client', required: false, attributes: ['id', 'name'] },
+      { association: 'Warehouse', required: false, attributes: ['id', 'name', 'code'] },
+      { association: 'User', required: false, attributes: ['id', 'name', 'email'] },
+    ],
+    order: [['createdAt', 'DESC']],
+    limit,
+    offset
+  });
+
+  const items = rows.map(l => {
+    const j = l.get({ plain: true });
+    j.createdBy = j.User;
+    
+    // Determine Event Type
+    let eventType = 'Adjustments';
+    const reasonLower = (j.reason || '').toLowerCase();
+    if (j.type === 'TRANSFER' || reasonLower.includes('transfer')) {
+      eventType = 'WhseTransfers';
+    } else if (reasonLower.includes('return')) {
+      if (reasonLower.includes('vendor') || reasonLower.includes('supplier')) {
+        eventType = 'VendorReturns';
+      } else {
+        eventType = 'CustomerReturns';
+      }
+    } else if (j.type === 'IN' && (
+      reasonLower.includes('receipt') || 
+      reasonLower.includes('purchase order') || 
+      reasonLower.includes('goods') || 
+      reasonLower.includes('asn') ||
+      reasonLower.includes('scan in') ||
+      reasonLower.includes('manual stock creation') ||
+      reasonLower.includes('batch creation')
+    )) {
+      eventType = 'Receipts';
+    } else if (j.type === 'OUT' && (
+      reasonLower.includes('shipment') || 
+      reasonLower.includes('sales order') || 
+      reasonLower.includes('scan out')
+    )) {
+      eventType = 'Shipments';
+    }
+
+    // Determine Disposition
+    let disposition = 'SELLABLE';
+    if (j.reason) {
+      const rLower = j.reason.toLowerCase();
+      if (rLower.includes('expired')) {
+        disposition = 'EXPIRED';
+      } else if (rLower.includes('carrier damaged') || rLower.includes('carrier_damaged')) {
+        disposition = 'CARRIER_DAMAGED';
+      } else if (rLower.includes('customer damaged') || rLower.includes('customer_damaged')) {
+        disposition = 'CUSTOMER_DAMAGED';
+      } else if (rLower.includes('distributor damaged') || rLower.includes('distributor_damaged')) {
+        disposition = 'DISTRIBUTOR_DAMAGED';
+      } else if (rLower.includes('warehouse damaged') || rLower.includes('warehouse_damaged')) {
+        disposition = 'WAREHOUSE_DAMAGED';
+      } else if (rLower.includes('defective')) {
+        disposition = 'DEFECTIVE';
+      } else if (rLower.includes('theft') || rLower.includes('waste') || rLower.includes('unsellable')) {
+        disposition = 'UNSELLABLE_OTHER';
+      } else if (rLower.includes('damaged')) {
+        disposition = 'WAREHOUSE_DAMAGED';
+      }
+    }
+
+    // Force negative sign for deductions
+    if (j.type === 'OUT') {
+      j.quantity = -Math.abs(j.quantity);
+    } else if (j.type === 'IN') {
+      j.quantity = Math.abs(j.quantity);
+    }
+
+    j.fulfillmentCentre = j.Warehouse?.code || j.Warehouse?.name || '—';
+
+    return {
+      ...j,
+      eventType,
+      disposition
+    };
+  });
+
+  return {
+    items,
+    total: count,
+    page,
+    pageSize: limit
+  };
 }
 
 
@@ -2680,6 +2941,32 @@ async function bulkActionProducts(action, productIds, reqUser) {
   }
 }
 
+async function reserveStockSoft(data, t) {
+  const { productId, warehouseId, quantity } = data;
+  const { Inventory } = require('../models');
+  const [inv] = await Inventory.findOrCreate({
+    where: { productId, warehouseId },
+    defaults: { quantity: 0, reservedQuantity: 0 },
+    transaction: t
+  });
+  await inv.increment('reservedQuantity', { by: quantity, transaction: t });
+  return { success: true };
+}
+
+async function unreserveStockSoft(data, t) {
+  const { productId, warehouseId, quantity } = data;
+  const { Inventory } = require('../models');
+  const inv = await Inventory.findOne({
+    where: { productId, warehouseId },
+    transaction: t
+  });
+  if (inv) {
+    const toDeduct = Math.min(Number(inv.reservedQuantity), quantity);
+    await inv.decrement('reservedQuantity', { by: toDeduct, transaction: t });
+  }
+  return { success: true };
+}
+
 // Standard Exports
 const inventoryService = {
   listProducts,
@@ -2718,12 +3005,15 @@ const inventoryService = {
   removeMovement,
   listInventory,
   listInventoryLogs,
+  listInventoryLedger,
   stockIn,
   stockOut,
   transfer,
   transferStock,
   reserveStock,
   unreserveStock,
+  reserveStockSoft,
+  unreserveStockSoft,
   shipStock,
   exportProductsCsv,
   bulkImportStock,

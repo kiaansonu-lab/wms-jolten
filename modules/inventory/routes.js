@@ -55,6 +55,7 @@ router.get('/movements/:id', requireClient, inventoryController.getMovement);
 router.post('/movements', requireStaff, inventoryController.createMovement);
 router.put('/movements/:id', requireStaff, inventoryController.updateMovement);
 router.delete('/movements/:id', requireAdmin, inventoryController.removeMovement);
+router.get('/ledger', requireClient, inventoryController.listInventoryLedger);
 
 // New Inventory System
 router.get('/', requireClient, inventoryController.listInventory);

@@ -7,8 +7,10 @@ const { authenticate, requireRole } = require('../../middlewares/auth');
 router.use(authenticate);
 
 router.get('/sales', requireRole('super_admin', 'company_admin', 'warehouse_manager', 'inventory_manager', 'picker', 'packer', 'viewer'), orderController.list);
+router.post('/sales/bulk-action', requireRole('super_admin', 'company_admin'), orderController.bulkAction);
 router.get('/sales/:id', requireRole('super_admin', 'company_admin', 'warehouse_manager', 'inventory_manager', 'picker', 'packer', 'viewer'), orderController.getById);
 router.post('/sales', requireRole('super_admin', 'company_admin'), orderController.create);
+router.post('/sales/:id/allocate', requireRole('super_admin', 'company_admin', 'warehouse_manager', 'inventory_manager'), orderController.allocate);
 router.put('/sales/:id', requireRole('super_admin', 'company_admin'), orderController.update);
 router.delete('/sales/:id', requireRole('super_admin', 'company_admin'), orderController.remove);
 

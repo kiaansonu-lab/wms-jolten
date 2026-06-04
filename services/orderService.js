@@ -9,19 +9,86 @@ async function list(reqUser, query = {}) {
   } else {
     where.companyId = reqUser.companyId;
   }
-  if (query.status) where.status = query.status;
-  const orders = await SalesOrder.findAll({
+
+  // Filter: Order Status
+  if (query.status && query.status !== 'all') {
+    where.status = query.status;
+  }
+
+  // Filter: Channel
+  if (query.salesChannel && query.salesChannel !== 'all') {
+    where.salesChannel = query.salesChannel;
+  }
+
+  // Filter: Courier Name
+  if (query.courierName && query.courierName !== 'all') {
+    where.courierName = query.courierName;
+  }
+
+  // Filter: Courier Service
+  if (query.courierService && query.courierService !== 'all') {
+    where.courierService = query.courierService;
+  }
+
+  // Filter: Dates
+  const dateField = query.useRequiredDespatch === 'true' ? 'requiredDespatchDate' : 'orderDate';
+  if (query.startDate || query.endDate) {
+    const dateCond = {};
+    if (query.startDate) dateCond[Op.gte] = query.startDate;
+    if (query.endDate) dateCond[Op.lte] = query.endDate;
+    where[dateField] = dateCond;
+  }
+
+  // Search filter (SKU, postcode, customer name, order number, billing/shipping address)
+  if (query.search) {
+    const searchVal = `%${query.search}%`;
+    where[Op.or] = [
+      { orderNumber: { [Op.like]: searchVal } },
+      { postcode: { [Op.like]: searchVal } },
+      { country: { [Op.like]: searchVal } },
+      { externalRef: { [Op.like]: searchVal } },
+      { tags: { [Op.like]: searchVal } },
+      { '$Client.name$': { [Op.like]: searchVal } },
+      { '$Client.address$': { [Op.like]: searchVal } },
+      { '$Client.city$': { [Op.like]: searchVal } },
+      { '$Client.postcode$': { [Op.like]: searchVal } },
+      { '$OrderItems.Product.sku$': { [Op.like]: searchVal } }
+    ];
+  }
+
+  // Pagination
+  const page = parseInt(query.page, 10) || 1;
+  const limit = parseInt(query.pageSize, 10) || 20;
+  const offset = (page - 1) * limit;
+
+  const { rows, count } = await SalesOrder.findAndCountAll({
     where,
     order: [['createdAt', 'DESC']],
     include: [
       { association: 'Company', attributes: ['id', 'name', 'code'] },
-      { association: 'Client', attributes: ['id', 'name', 'email', 'address', 'city', 'state', 'country', 'postcode'] },
-      { association: 'OrderItems', include: [{ association: 'Product', attributes: ['id', 'name', 'sku', 'weight', 'weightUnit'] }, { association: 'Warehouse', attributes: ['id', 'name'] }] },
+      { association: 'Client', attributes: ['id', 'name', 'code', 'email', 'phone', 'contactPerson', 'address', 'city', 'state', 'country', 'postcode'] },
+      {
+        association: 'OrderItems',
+        required: false,
+        include: [
+          { association: 'Product', attributes: ['id', 'name', 'sku', 'weight', 'weightUnit'] },
+          { association: 'Warehouse', attributes: ['id', 'name'] }
+        ]
+      },
       { association: 'PickLists', include: [{ association: 'PickListItems', include: [{ association: 'Product' }] }] },
       { association: 'Shipment' },
     ],
+    distinct: true,
+    limit,
+    offset,
   });
-  return orders.map((o) => o.get({ plain: true }));
+
+  return {
+    items: rows.map((o) => o.get({ plain: true })),
+    total: count,
+    page,
+    pageSize: limit
+  };
 }
 
 async function getById(id, reqUser) {
@@ -49,10 +116,30 @@ async function create(data, reqUser) {
     const count = await SalesOrder.count({ where: { companyId }, transaction: t });
     const orderNumber = `ORD-${Date.now()}-${String(count + 1).padStart(4, '0')}`;
 
+    // 1. If saveAddress is true, save this address to the customers table
+    let customerId = data.customerId || null;
+    if (data.saveAddress && !customerId && data.recipientName) {
+      const newCustomer = await Customer.create({
+        companyId,
+        name: data.recipientName,
+        contactPerson: data.recipientName,
+        phone: data.phone || null,
+        email: data.email || null,
+        country: data.country || null,
+        state: data.county || null,
+        city: data.town || null,
+        address: [data.addressLine1, data.addressLine2, data.addressLine3].filter(Boolean).join('\n'),
+        postcode: data.postcode || null,
+        status: 'ACTIVE'
+      }, { transaction: t });
+      customerId = newCustomer.id;
+    }
+
+    // 2. Create the SalesOrder record
     const order = await SalesOrder.create({
       companyId,
       orderNumber,
-      customerId: data.customerId || null,
+      customerId: customerId,
       orderDate: data.orderDate || null,
       requiredDate: data.requiredDate || null,
       priority: data.priority || 'MEDIUM',
@@ -63,10 +150,21 @@ async function create(data, reqUser) {
       status: 'DRAFT',
       totalAmount: 0,
       createdBy: reqUser.id,
+      recipientName: data.recipientName || null,
+      addressLine1: data.addressLine1 || null,
+      addressLine2: data.addressLine2 || null,
+      addressLine3: data.addressLine3 || null,
+      town: data.town || null,
+      county: data.county || null,
+      postcode: data.postcode || null,
+      country: data.country || null,
+      phone: data.phone || null,
+      email: data.email || null,
     }, { transaction: t });
 
     let total = 0;
     const warehouse = await Warehouse.findOne({ where: { companyId }, transaction: t });
+    let hasSoftAllocations = false;
 
     if (data.items && data.items.length) {
       for (const row of data.items) {
@@ -76,111 +174,130 @@ async function create(data, reqUser) {
         const unitPrice = row.unitPrice ?? product.price;
         const qty = row.quantity || 1;
 
-        // RESERVE STOCK
-        // We prioritize the warehouse selected by the user (row.warehouseId).
-        let targetWarehouseId = row.warehouseId;
+        // Resolve Target Warehouse
+        let targetWarehouseId = row.warehouseId || warehouse?.id;
+        if (!targetWarehouseId) {
+          const firstStock = await ProductStock.findOne({
+            where: { productId: product.id, companyId, quantity: { [Op.gt]: sequelize.col('reserved') } },
+            transaction: t
+          });
+          targetWarehouseId = firstStock?.warehouseId;
+        }
+        if (!targetWarehouseId) {
+          throw new Error(`Insufficient available stock for product ${product.sku} across all warehouses.`);
+        }
 
-        if (targetWarehouseId) {
-          // Verify stock in selected warehouse
-          const hasStockInSelected = await ProductStock.findOne({
+        // Option 2: Manual Location Allocation
+        if (row.locationId) {
+          const stockRow = await ProductStock.findOne({
             where: {
               productId: product.id,
               warehouseId: targetWarehouseId,
-              companyId,
-              quantity: { [Op.gt]: sequelize.col('reserved') }
+              locationId: row.locationId,
+              batchNumber: row.batchNumber || null,
+              bestBeforeDate: row.bestBeforeDate || null,
+              companyId
             },
             transaction: t
           });
-          if (!hasStockInSelected) {
-            throw new Error(`Insufficient available stock for product ${product.sku} in selected warehouse.`);
+          if (!stockRow || (stockRow.quantity - stockRow.reserved) < qty) {
+            throw new Error(`Insufficient available stock at location selection for product ${product.sku}.`);
           }
-        } else {
-          // No warehouse selected, try default warehouse
-          targetWarehouseId = warehouse?.id;
-          const hasStockInDefault = targetWarehouseId ? await ProductStock.findOne({
-            where: {
-              productId: product.id,
-              warehouseId: targetWarehouseId,
-              companyId,
-              quantity: { [Op.gt]: sequelize.col('reserved') }
-            },
-            transaction: t
-          }) : null;
 
-          if (!hasStockInDefault) {
-            // Try ANY warehouse
-            const otherWh = await ProductStock.findOne({
-              where: {
-                productId: product.id,
-                companyId,
-                quantity: { [Op.gt]: sequelize.col('reserved') }
-              },
-              transaction: t
-            });
-            if (otherWh) {
-              targetWarehouseId = otherWh.warehouseId;
-            } else {
-              throw new Error(`Insufficient available stock for product ${product.sku} across all warehouses.`);
-            }
-          }
-        }
-
-        await OrderItem.create({
-          salesOrderId: order.id,
-          productId: product.id,
-          quantity: qty,
-          unitPrice: unitPrice,
-          warehouseId: targetWarehouseId,
-        }, { transaction: t });
-
-        total += Number(unitPrice) * qty;
-
-        if (targetWarehouseId) {
-          await inventoryService.reserveStock({
+          // Hard reserve in ProductStock row
+          await stockRow.increment('reserved', { by: qty, transaction: t });
+          
+          // Soft reserve in warehouse total
+          await inventoryService.reserveStockSoft({
             productId: product.id,
-            companyId,
             warehouseId: targetWarehouseId,
             quantity: qty
           }, t);
+
+          // Create hard-allocated OrderItem
+          await OrderItem.create({
+            salesOrderId: order.id,
+            productId: product.id,
+            quantity: qty,
+            unitPrice: unitPrice,
+            warehouseId: targetWarehouseId,
+            locationId: row.locationId,
+            batchNumber: row.batchNumber || null,
+            bestBeforeDate: row.bestBeforeDate || null
+          }, { transaction: t });
         } else {
-          throw new Error(`Insufficient available stock for product ${product.sku} across all warehouses.`);
+          // Option 1: Soft Allocation
+          hasSoftAllocations = true;
+
+          // Verify total stock in selected warehouse is sufficient for soft reservation
+          const stocks = await ProductStock.findAll({
+            where: { productId: product.id, warehouseId: targetWarehouseId, companyId },
+            transaction: t
+          });
+          const totalAvail = stocks.reduce((sum, s) => sum + (Number(s.quantity) - Number(s.reserved)), 0);
+          if (totalAvail < qty) {
+            throw new Error(`Insufficient available warehouse stock for product ${product.sku}.`);
+          }
+
+          // Soft reserve in warehouse total only
+          await inventoryService.reserveStockSoft({
+            productId: product.id,
+            warehouseId: targetWarehouseId,
+            quantity: qty
+          }, t);
+
+          // Create soft-allocated OrderItem (no locationId)
+          await OrderItem.create({
+            salesOrderId: order.id,
+            productId: product.id,
+            quantity: qty,
+            unitPrice: unitPrice,
+            warehouseId: targetWarehouseId
+          }, { transaction: t });
         }
+
+        total += Number(unitPrice) * qty;
       }
+      
       await order.update({ totalAmount: total }, { transaction: t });
     }
 
-    // 5. Create PickLists for each warehouse involved
-    const orderItemsForPick = await OrderItem.findAll({ where: { salesOrderId: order.id }, transaction: t });
-    const warehouseGroups = {};
-    orderItemsForPick.forEach(item => {
-      if (!warehouseGroups[item.warehouseId]) warehouseGroups[item.warehouseId] = [];
-      warehouseGroups[item.warehouseId].push(item);
-    });
+    // 5. Create PickLists only if all items are fully allocated (meaning no soft allocations)
+    if (!hasSoftAllocations && data.items && data.items.length) {
+      const orderItemsForPick = await OrderItem.findAll({ where: { salesOrderId: order.id }, transaction: t });
+      const warehouseGroups = {};
+      orderItemsForPick.forEach(item => {
+        if (!warehouseGroups[item.warehouseId]) warehouseGroups[item.warehouseId] = [];
+        warehouseGroups[item.warehouseId].push(item);
+      });
 
-    for (const whId in warehouseGroups) {
-      const pickList = await PickList.create({
-        salesOrderId: order.id,
-        warehouseId: whId,
-        status: 'NOT_STARTED',
-      }, { transaction: t });
+      for (const whId in warehouseGroups) {
+        const pickList = await PickList.create({
+          salesOrderId: order.id,
+          warehouseId: whId,
+          status: 'NOT_STARTED',
+        }, { transaction: t });
 
-      for (const item of warehouseGroups[whId]) {
-        await PickListItem.create({
+        for (const item of warehouseGroups[whId]) {
+          await PickListItem.create({
+            pickListId: pickList.id,
+            productId: item.productId,
+            quantityRequired: item.quantity,
+            quantityPicked: 0,
+          }, { transaction: t });
+        }
+        await PackingTask.create({
+          salesOrderId: order.id,
           pickListId: pickList.id,
-          productId: item.productId,
-          quantityRequired: item.quantity,
-          quantityPicked: 0,
+          status: 'NOT_STARTED',
         }, { transaction: t });
       }
-      // Also create a PackingTask for this PickList
-      await PackingTask.create({
-        salesOrderId: order.id,
-        pickListId: pickList.id,
-        status: 'NOT_STARTED',
-      }, { transaction: t });
-    }
 
-    await order.update({ status: 'CONFIRMED' }, { transaction: t });
+      await order.update({ status: 'CONFIRMED' }, { transaction: t });
+    } else {
+      // It remains DRAFT if soft allocations exist
+      await order.update({ status: 'DRAFT' }, { transaction: t });
+    }
 
     await t.commit();
     return getById(order.id, reqUser);
@@ -201,22 +318,45 @@ async function update(id, data, reqUser) {
     if (!order) throw new Error('Order not found');
     if (reqUser.role !== 'super_admin' && order.companyId !== reqUser.companyId) throw new Error('Order not found');
 
-    const allowedStatuses = ['DRAFT', 'CONFIRMED'];
+    const allowedStatuses = ['DRAFT', 'CONFIRMED', 'BACKORDER'];
     if (!allowedStatuses.includes((order.status || '').toUpperCase())) {
-      throw new Error('Only DRAFT or CONFIRMED orders can be edited');
+      throw new Error('Only DRAFT, CONFIRMED, or BACKORDER orders can be edited');
     }
 
-    // 1. Unreserve OLD items (if a warehouse was assigned)
-    const warehouseId = order.PickLists?.[0]?.warehouseId;
-    if (warehouseId && order.OrderItems) {
+    // 1. Unreserve OLD items correctly
+    if (order.OrderItems) {
       for (const item of order.OrderItems) {
-        await inventoryService.unreserveStock({
-          productId: item.productId,
-          companyId: order.companyId,
-          warehouseId,
-          clientId: order.customerId || null,
-          quantity: item.quantity
-        }, t);
+        const whId = item.warehouseId || order.PickLists?.[0]?.warehouseId;
+        if (!whId) continue;
+        
+        if (item.locationId) {
+          const stockRow = await ProductStock.findOne({
+            where: {
+              productId: item.productId,
+              warehouseId: whId,
+              locationId: item.locationId,
+              batchNumber: item.batchNumber || null,
+              bestBeforeDate: item.bestBeforeDate || null,
+              companyId: order.companyId
+            },
+            transaction: t
+          });
+          if (stockRow) {
+            const toDeduct = Math.min(Number(stockRow.reserved), item.quantity);
+            await stockRow.decrement('reserved', { by: toDeduct, transaction: t });
+          }
+          await inventoryService.unreserveStockSoft({
+            productId: item.productId,
+            warehouseId: whId,
+            quantity: item.quantity
+          }, t);
+        } else {
+          await inventoryService.unreserveStockSoft({
+            productId: item.productId,
+            warehouseId: whId,
+            quantity: item.quantity
+          }, t);
+        }
       }
     }
 
@@ -230,6 +370,17 @@ async function update(id, data, reqUser) {
       orderType: data.orderType !== undefined ? data.orderType : order.orderType,
       referenceNumber: data.referenceNumber !== undefined ? data.referenceNumber : order.referenceNumber,
       notes: data.notes !== undefined ? data.notes : order.notes,
+      
+      recipientName: data.recipientName !== undefined ? data.recipientName : order.recipientName,
+      addressLine1: data.addressLine1 !== undefined ? data.addressLine1 : order.addressLine1,
+      addressLine2: data.addressLine2 !== undefined ? data.addressLine2 : order.addressLine2,
+      addressLine3: data.addressLine3 !== undefined ? data.addressLine3 : order.addressLine3,
+      town: data.town !== undefined ? data.town : order.town,
+      county: data.county !== undefined ? data.county : order.county,
+      postcode: data.postcode !== undefined ? data.postcode : order.postcode,
+      country: data.country !== undefined ? data.country : order.country,
+      phone: data.phone !== undefined ? data.phone : order.phone,
+      email: data.email !== undefined ? data.email : order.email,
     }, { transaction: t });
 
     // 3. Update Items & Reserve NEW ones
@@ -238,6 +389,7 @@ async function update(id, data, reqUser) {
       let total = 0;
 
       const currentWarehouse = await Warehouse.findOne({ where: { companyId: order.companyId }, transaction: t });
+      let hasSoftAllocations = false;
 
       for (const row of data.items) {
         const product = await Product.findByPk(row.productId, { transaction: t });
@@ -246,27 +398,109 @@ async function update(id, data, reqUser) {
         const unitPrice = row.unitPrice ?? product.price;
         const qty = row.quantity || 1;
 
-        await OrderItem.create({
-          salesOrderId: order.id,
-          productId: product.id,
-          quantity: qty,
-          unitPrice: unitPrice,
-        }, { transaction: t });
+        let targetWarehouseId = row.warehouseId || currentWarehouse?.id;
+        if (!targetWarehouseId) {
+          throw new Error(`Warehouse is required for product ${product.sku}`);
+        }
 
-        total += Number(unitPrice) * qty;
+        if (row.locationId) {
+          const stockRow = await ProductStock.findOne({
+            where: {
+              productId: product.id,
+              warehouseId: targetWarehouseId,
+              locationId: row.locationId,
+              batchNumber: row.batchNumber || null,
+              bestBeforeDate: row.bestBeforeDate || null,
+              companyId: order.companyId
+            },
+            transaction: t
+          });
+          if (!stockRow || (stockRow.quantity - stockRow.reserved) < qty) {
+            throw new Error(`Insufficient available stock at location selection for product ${product.sku}.`);
+          }
 
-        // Re-reserve
-        if (currentWarehouse) {
-          await inventoryService.reserveStock({
+          await stockRow.increment('reserved', { by: qty, transaction: t });
+          await inventoryService.reserveStockSoft({
             productId: product.id,
-            companyId: order.companyId,
-            warehouseId: currentWarehouse.id,
-            clientId: order.customerId || null,
+            warehouseId: targetWarehouseId,
             quantity: qty
           }, t);
+
+          await OrderItem.create({
+            salesOrderId: order.id,
+            productId: product.id,
+            quantity: qty,
+            unitPrice: unitPrice,
+            warehouseId: targetWarehouseId,
+            locationId: row.locationId,
+            batchNumber: row.batchNumber || null,
+            bestBeforeDate: row.bestBeforeDate || null
+          }, { transaction: t });
+        } else {
+          hasSoftAllocations = true;
+
+          await inventoryService.reserveStockSoft({
+            productId: product.id,
+            warehouseId: targetWarehouseId,
+            quantity: qty
+          }, t);
+
+          await OrderItem.create({
+            salesOrderId: order.id,
+            productId: product.id,
+            quantity: qty,
+            unitPrice: unitPrice,
+            warehouseId: targetWarehouseId
+          }, { transaction: t });
         }
+
+        total += Number(unitPrice) * qty;
       }
       await order.update({ totalAmount: total }, { transaction: t });
+
+      // Rebuild picklists if no soft allocations are present
+      if (!hasSoftAllocations && data.items.length) {
+        const existingPickLists = await PickList.findAll({ where: { salesOrderId: order.id }, transaction: t });
+        for (const pl of existingPickLists) {
+          await PickListItem.destroy({ where: { pickListId: pl.id }, transaction: t });
+          await PackingTask.destroy({ where: { pickListId: pl.id }, transaction: t });
+          await pl.destroy({ transaction: t });
+        }
+        await PackingTask.destroy({ where: { salesOrderId: order.id }, transaction: t });
+
+        const orderItemsForPick = await OrderItem.findAll({ where: { salesOrderId: order.id }, transaction: t });
+        const warehouseGroups = {};
+        orderItemsForPick.forEach(item => {
+          if (!warehouseGroups[item.warehouseId]) warehouseGroups[item.warehouseId] = [];
+          warehouseGroups[item.warehouseId].push(item);
+        });
+
+        for (const whId in warehouseGroups) {
+          const pickList = await PickList.create({
+            salesOrderId: order.id,
+            warehouseId: whId,
+            status: 'NOT_STARTED',
+          }, { transaction: t });
+
+          for (const item of warehouseGroups[whId]) {
+            await PickListItem.create({
+              pickListId: pickList.id,
+              productId: item.productId,
+              quantityRequired: item.quantity,
+              quantityPicked: 0,
+            }, { transaction: t });
+          }
+          await PackingTask.create({
+            salesOrderId: order.id,
+            pickListId: pickList.id,
+            status: 'NOT_STARTED',
+          }, { transaction: t });
+        }
+
+        await order.update({ status: 'CONFIRMED' }, { transaction: t });
+      } else {
+        await order.update({ status: 'DRAFT' }, { transaction: t });
+      }
     }
 
     await t.commit();
@@ -288,23 +522,46 @@ async function remove(id, reqUser) {
     if (!order) throw new Error('Order not found');
     if (reqUser.role !== 'super_admin' && order.companyId !== reqUser.companyId) throw new Error('Order not found');
 
-    const allowedStatuses = ['DRAFT', 'CONFIRMED', 'PICK_LIST_CREATED'];
+    const allowedStatuses = ['DRAFT', 'CONFIRMED', 'BACKORDER', 'PICK_LIST_CREATED'];
     const status = (order.status || '').toUpperCase();
     if (!allowedStatuses.includes(status)) {
-      throw new Error(`This sales order cannot be deleted. Current status: ${status || 'Unknown'}. Only Draft, Confirmed or Pick list created orders can be deleted.`);
+      throw new Error(`This sales order cannot be deleted. Current status: ${status || 'Unknown'}.`);
     }
 
     // UNRESERVE STOCK
-    const warehouseId = order.PickLists?.[0]?.warehouseId;
-    if (warehouseId && order.OrderItems) {
+    if (order.OrderItems) {
       for (const item of order.OrderItems) {
-        await inventoryService.unreserveStock({
-          productId: item.productId,
-          companyId: order.companyId,
-          warehouseId,
-          clientId: order.customerId || null,
-          quantity: item.quantity
-        }, t);
+        const warehouseId = item.warehouseId || order.PickLists?.[0]?.warehouseId;
+        if (!warehouseId) continue;
+
+        if (item.locationId) {
+          const stockRow = await ProductStock.findOne({
+            where: {
+              productId: item.productId,
+              warehouseId,
+              locationId: item.locationId,
+              batchNumber: item.batchNumber || null,
+              bestBeforeDate: item.bestBeforeDate || null,
+              companyId: order.companyId
+            },
+            transaction: t
+          });
+          if (stockRow) {
+            const toDeduct = Math.min(Number(stockRow.reserved), item.quantity);
+            await stockRow.decrement('reserved', { by: toDeduct, transaction: t });
+          }
+          await inventoryService.unreserveStockSoft({
+            productId: item.productId,
+            warehouseId,
+            quantity: item.quantity
+          }, t);
+        } else {
+          await inventoryService.unreserveStockSoft({
+            productId: item.productId,
+            warehouseId,
+            quantity: item.quantity
+          }, t);
+        }
       }
     }
 
@@ -327,4 +584,116 @@ async function remove(id, reqUser) {
   }
 }
 
-module.exports = { list, getById, create, update, remove };
+
+async function bulkAction(data, reqUser) {
+  const { action, ids, tag } = data;
+  if (!ids || !Array.isArray(ids) || ids.length === 0) throw new Error('No order IDs provided');
+
+  const companyWhere = reqUser.role === 'super_admin' ? {} : { companyId: reqUser.companyId };
+
+  const orders = await SalesOrder.findAll({
+    where: { id: { [Op.in]: ids }, ...companyWhere },
+    include: [{ association: 'OrderItems' }, { association: 'PickLists' }]
+  });
+
+  let affected = 0;
+
+  for (const order of orders) {
+    try {
+      if (action === 'delete') {
+        const t = await sequelize.transaction();
+        try {
+          if (order.OrderItems) {
+            for (const item of order.OrderItems) {
+              const warehouseId = item.warehouseId || order.PickLists?.[0]?.warehouseId;
+              if (!warehouseId) continue;
+
+              if (item.locationId) {
+                const stockRow = await ProductStock.findOne({
+                  where: {
+                    productId: item.productId,
+                    warehouseId,
+                    locationId: item.locationId,
+                    batchNumber: item.batchNumber || null,
+                    bestBeforeDate: item.bestBeforeDate || null,
+                    companyId: order.companyId
+                  },
+                  transaction: t
+                });
+                if (stockRow) {
+                  const toDeduct = Math.min(Number(stockRow.reserved), item.quantity);
+                  await stockRow.decrement('reserved', { by: toDeduct, transaction: t });
+                }
+                await inventoryService.unreserveStockSoft({
+                  productId: item.productId,
+                  warehouseId,
+                  quantity: item.quantity
+                }, t);
+              } else {
+                await inventoryService.unreserveStockSoft({
+                  productId: item.productId,
+                  warehouseId,
+                  quantity: item.quantity
+                }, t);
+              }
+            }
+          }
+          await OrderItem.destroy({ where: { salesOrderId: order.id }, transaction: t });
+          const pickLists = await PickList.findAll({ where: { salesOrderId: order.id }, transaction: t });
+          for (const pl of pickLists) {
+            await PickListItem.destroy({ where: { pickListId: pl.id }, transaction: t });
+            await PackingTask.destroy({ where: { pickListId: pl.id }, transaction: t });
+            await pl.destroy({ transaction: t });
+          }
+          await PackingTask.destroy({ where: { salesOrderId: order.id }, transaction: t });
+          await Shipment.destroy({ where: { salesOrderId: order.id }, transaction: t });
+          await order.destroy({ transaction: t });
+          await t.commit();
+          affected++;
+        } catch (e) {
+          await t.rollback();
+        }
+      } else if (action === 'mark_despatched') {
+        await order.update({ status: 'SHIPPED' });
+        affected++;
+      } else if (action === 'confirm') {
+        await order.update({ status: 'CONFIRMED' });
+        affected++;
+      } else if (action === 'cancel') {
+        await order.update({ status: 'CANCELLED' });
+        affected++;
+      } else if (action === 'uncancel') {
+        await order.update({ status: 'CONFIRMED' });
+        affected++;
+      } else if (action === 'place_on_backorder') {
+        await order.update({ status: 'BACKORDER' });
+        affected++;
+      } else if (action === 'mark_picked') {
+        await order.update({ status: 'PICKED' });
+        affected++;
+      } else if (action === 'add_tag') {
+        if (tag) {
+          const existing = (order.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+          if (!existing.includes(tag)) existing.push(tag);
+          await order.update({ tags: existing.join(', ') });
+        }
+        affected++;
+      } else if (action === 'remove_tag') {
+        if (tag) {
+          const existing = (order.tags || '').split(',').map(t => t.trim()).filter(t => t && t !== tag);
+          await order.update({ tags: existing.join(', ') });
+        }
+        affected++;
+      } else if (action === 'export_csv') {
+        // handled client-side
+        affected++;
+      }
+    } catch (e) {
+      // skip individual failures
+    }
+  }
+
+  return { affected, action };
+}
+
+module.exports = { list, getById, create, update, remove, bulkAction };

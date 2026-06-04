@@ -1,4 +1,5 @@
 const orderService = require('../services/orderService');
+const allocationService = require('../services/allocationService');
 
 async function list(req, res, next) {
   try {
@@ -51,4 +52,24 @@ async function remove(req, res, next) {
   }
 }
 
-module.exports = { list, getById, create, update, remove };
+async function bulkAction(req, res, next) {
+  try {
+    const data = await orderService.bulkAction(req.body, req.user);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function allocate(req, res, next) {
+  try {
+    const result = await allocationService.allocateOrder(req.params.id);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    if (err.message === 'Order not found') return res.status(404).json({ success: false, message: err.message });
+    next(err);
+  }
+}
+
+module.exports = { list, getById, create, update, remove, bulkAction, allocate };
+

@@ -57,9 +57,12 @@ const soRoles = ['super_admin', 'company_admin', 'warehouse_manager', 'inventory
 const soWriteRoles = ['super_admin', 'company_admin'];
 app.get('/api/orders/sales', authenticate, requireRole(...soRoles), orderController.list);
 app.post('/api/orders/sales', authenticate, requireRole(...soWriteRoles), orderController.create);
+app.post('/api/orders/sales/bulk-action', authenticate, requireRole(...soWriteRoles), orderController.bulkAction);
 app.get('/api/orders/sales/:id', authenticate, requireRole(...soRoles), orderController.getById);
 app.put('/api/orders/sales/:id', authenticate, requireRole(...soWriteRoles), orderController.update);
 app.delete('/api/orders/sales/:id', authenticate, requireRole(...soWriteRoles), orderController.remove);
+app.post('/api/orders/sales/:id/allocate', authenticate, requireRole('super_admin', 'company_admin', 'warehouse_manager', 'inventory_manager'), orderController.allocate);
+
 
 // Dashboard - single route /api/dashboard/:type so stats + charts dono chalenge
 const dashboardRoles = ['super_admin', 'company_admin', 'warehouse_manager', 'inventory_manager', 'viewer', 'picker', 'packer'];
@@ -171,7 +174,7 @@ async function start() {
       }
     }
     const syncOptions = { alter: dialect === 'sqlite' };
-    
+
     // MySQL Manual Column Fixes helper
     const applyManualFixes = async () => {
       if (dialect !== 'mysql') return;
@@ -252,6 +255,36 @@ async function start() {
         { t: 'customers', c: 'header_image_url', type: 'TEXT' },
         { t: 'suppliers', c: 'header_image_url', type: 'TEXT' },
         { t: 'order_items', c: 'warehouse_id', type: 'INT' },
+        { t: 'sales_orders', c: 'external_ref', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'parts', type: 'VARCHAR(50) DEFAULT "1of1"' },
+        { t: 'sales_orders', c: 'postcode', type: 'VARCHAR(50)' },
+        { t: 'sales_orders', c: 'country', type: 'VARCHAR(100)' },
+        { t: 'sales_orders', c: 'courier_name', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'courier_service', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'requested_shipping_service', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'required_despatch_date', type: 'DATE' },
+        { t: 'sales_orders', c: 'required_delivery_date', type: 'DATE' },
+        { t: 'sales_orders', c: 'no_of_parcels', type: 'INT DEFAULT 1' },
+        { t: 'sales_orders', c: 'total_weight', type: 'DECIMAL(10, 3) DEFAULT 0.0' },
+        { t: 'sales_orders', c: 'total_items', type: 'INT DEFAULT 1' },
+        { t: 'sales_orders', c: 'tracking_status', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'tracking_number', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'tags', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'batch_id', type: 'INT DEFAULT 0' },
+        { t: 'sales_orders', c: 'order_lock', type: 'BOOLEAN DEFAULT false' },
+        { t: 'products', c: 'default_picking_location_id', type: 'INT' },
+        { t: 'products', c: 'is_discontinued', type: 'TINYINT(1) DEFAULT 0' },
+        { t: 'order_items', c: 'location_id', type: 'INT' },
+        { t: 'order_items', c: 'batch_number', type: 'VARCHAR(255)' },
+        { t: 'order_items', c: 'best_before_date', type: 'DATE' },
+        { t: 'sales_orders', c: 'recipient_name', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'address_line1', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'address_line2', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'address_line3', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'town', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'county', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'phone', type: 'VARCHAR(255)' },
+        { t: 'sales_orders', c: 'email', type: 'VARCHAR(255)' },
       ];
       for (const col of manualCols) {
         try {
@@ -286,20 +319,20 @@ async function start() {
       for (let attempt = 1; attempt <= 3 && !syncDone; attempt += 1) {
         try {
           // Pre-sync manual columns so unique indexes can be created
-          if (attempt === 1) await applyManualFixes(); 
-          
+          if (attempt === 1) await applyManualFixes();
+
           await sequelize.sync(syncOptions);
           syncDone = true;
         } catch (syncErr) {
           console.warn(`[DB] Sync attempt ${attempt} failed: ${syncErr.message.slice(0, 100)}`);
-          
+
           const brokenTable = getBrokenMySqlTableName(syncErr);
           const isMissingCol = syncErr.message.includes("doesn't exist") || syncErr.original?.errno === 1072;
 
           if (isMissingCol) {
-             console.log('[DB] Missing column detected, retrying manual fixes...');
-             await applyManualFixes();
-             continue;
+            console.log('[DB] Missing column detected, retrying manual fixes...');
+            await applyManualFixes();
+            continue;
           }
 
           if (!brokenTable || attempt === 3) {
@@ -323,9 +356,9 @@ async function start() {
     } else {
       await sequelize.sync(syncOptions);
     }
-    
+
     console.log('Database synced successfully.');
-    
+
     // BACKFILL warehouse_id for old OrderItems
     try {
       const { OrderItem, PickList } = require('./models');
@@ -341,6 +374,81 @@ async function start() {
       }
     } catch (e) {
       console.warn('[DB] Backfill error:', e.message);
+    }
+
+    // BACKFILL SalesOrders with realistic seed data if they don't have it
+    try {
+      const { SalesOrder, Customer } = require('./models');
+      const orders = await SalesOrder.findAll();
+
+      const couriers = ['Royal Mail', 'DPD', 'DHL', 'FedEx', 'UPS'];
+      const courierServices = ['Royal Mail Tracked 48 | Standard', 'Royal Mail Tracked 24 | Express', 'DPD Next Day - Parcel | Standard', 'DHL Express | Express', 'Dummy | Standard'];
+      const requestedShippingServices = ['Standard Delivery', 'Express Delivery', 'Next Day Guaranteed', 'Economy Shipping'];
+      const channels = ['AMAZON', 'EBAY', 'SHOPIFY', 'DIRECT'];
+
+      for (const order of orders) {
+        let needsUpdate = false;
+        const updates = {};
+
+        if (!order.postcode || !order.country) {
+          const cust = order.customerId ? await Customer.findByPk(order.customerId) : null;
+          updates.postcode = cust?.postcode || 'SW1A 1AA';
+          updates.country = cust?.country || 'UNITED KINGDOM';
+          needsUpdate = true;
+        }
+
+        if (!order.courierName) {
+          updates.courierName = couriers[order.id % couriers.length];
+          needsUpdate = true;
+        }
+
+        if (!order.courierService) {
+          updates.courierService = courierServices[order.id % courierServices.length];
+          needsUpdate = true;
+        }
+
+        if (!order.requestedShippingService) {
+          updates.requestedShippingService = requestedShippingServices[order.id % requestedShippingServices.length];
+          needsUpdate = true;
+        }
+
+        if (!order.externalRef) {
+          updates.externalRef = `EXT-${1000000 + order.id}`;
+          needsUpdate = true;
+        }
+
+        if (!order.parts) {
+          updates.parts = `1of1`;
+          needsUpdate = true;
+        }
+
+        if (!order.requiredDespatchDate) {
+          updates.requiredDespatchDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+          needsUpdate = true;
+        }
+
+        if (!order.requiredDeliveryDate) {
+          updates.requiredDeliveryDate = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+          needsUpdate = true;
+        }
+
+        if (!order.tags) {
+          const tagOptions = ['PRIME', 'HEAVY', 'FRAGILE', 'GIFT', ''];
+          updates.tags = tagOptions[order.id % tagOptions.length];
+          needsUpdate = true;
+        }
+
+        if (order.batchId === null || order.batchId === undefined || order.batchId === 0) {
+          updates.batchId = order.id % 3 === 0 ? order.id : 0;
+          needsUpdate = true;
+        }
+
+        if (needsUpdate) {
+          await order.update(updates);
+        }
+      }
+    } catch (e) {
+      console.warn('[DB] SalesOrder backfill seed error:', e.message);
     }
 
     // Reset pending GoodsReceiptItem qtyToBook to 0 on startup so they don't show as fully received
@@ -360,7 +468,7 @@ async function start() {
     } catch (e) {
       console.warn('[DB] Reset pending qtyToBook error:', e.message);
     }
-    
+
     // AUTO-SEED DEMO USERS if they don't exist (For 'Proper' Live Demo Experience)
     const bcrypt = require('bcryptjs');
     const { User, Company } = require('./models');
@@ -423,9 +531,9 @@ async function start() {
     });
   } catch (err) {
     console.error('Unable to start server:', err);
-    
+
     const isConnErr = err?.code === 'ECONNREFUSED' || err?.parent?.code === 'ECONNREFUSED' || err?.code === 'ETIMEDOUT' || err?.parent?.code === 'ETIMEDOUT';
-    
+
     if (isConnErr && (process.env.DB_DIALECT || 'sqlite') === 'mysql') {
       console.error('\n--- Database Connection Error ---');
       console.error('Details:', err.message);
