@@ -397,6 +397,12 @@ async function start() {
           needsUpdate = true;
         }
 
+        if (!order.recipientName) {
+          const cust = order.customerId ? await Customer.findByPk(order.customerId) : null;
+          updates.recipientName = cust?.contactPerson || cust?.name || 'Demo Customer';
+          needsUpdate = true;
+        }
+
         if (!order.courierName) {
           updates.courierName = couriers[order.id % couriers.length];
           needsUpdate = true;
