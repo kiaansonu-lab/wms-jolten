@@ -2145,7 +2145,9 @@ async function stockIn(data, reqUser) {
   if (!product) throw new Error('Product not found');
   if (reqUser.role !== 'super_admin' && product.companyId !== reqUser.companyId) throw new Error('Product not found');
 
-  if (isTruthyYes(product.requireBatchTracking) && !String(batchNumber || '').trim()) {
+  const normalizedBatch = batchNumber && String(batchNumber).trim() !== '' ? String(batchNumber).trim() : null;
+
+  if (isTruthyYes(product.requireBatchTracking) && !normalizedBatch) {
     throw new Error(`${product.name || 'This product'} requires a Batch Number for accurate tracking`);
   }
   if (isTruthyYes(product.perishable) && !bestBeforeDate) {
@@ -2168,7 +2170,7 @@ async function stockIn(data, reqUser) {
       productId,
       warehouseId,
       locationId: locationId || null,
-      batchNumber: batchNumber.trim(),
+      batchNumber: normalizedBatch,
       bestBeforeDate: bestBeforeDate || null,
       clientId: clientId || null
     };
@@ -2185,7 +2187,7 @@ async function stockIn(data, reqUser) {
         productId,
         warehouseId,
         locationId: locationId || null,
-        batchNumber: batchNumber.trim(),
+        batchNumber: normalizedBatch,
         clientId: clientId || null,
         quantity: quantity,
         reserved: 0,
@@ -2203,7 +2205,7 @@ async function stockIn(data, reqUser) {
       type: 'IN',
       quantity,
       referenceId: referenceId || 'SCAN_IN',
-      batchNumber: batchNumber.trim(),
+      batchNumber: normalizedBatch,
       bestBeforeDate,
       reason: reason || 'Scan In',
       userId: reqUser.id
@@ -2261,6 +2263,9 @@ async function transferStock(data, reqUser) {
   if (!product) throw new Error('Product not found');
   if (reqUser.role !== 'super_admin' && product.companyId !== reqUser.companyId) throw new Error('Product not found');
 
+  const normalizedBatch = batchNumber && String(batchNumber).trim() !== '' ? String(batchNumber).trim() : null;
+  const normalizedBbd = bestBeforeDate && String(bestBeforeDate).trim() !== '' ? String(bestBeforeDate).trim() : null;
+
   // Check if source stock row actually has a batch number
   const sourceStockCheck = await ProductStock.findOne({
     where: {
@@ -2272,9 +2277,7 @@ async function transferStock(data, reqUser) {
   });
 
   // Only enforce batch tracking if product requires it AND source stock actually has a batch
-  if (isTruthyYes(product.requireBatchTracking) && !String(batchNumber || '').trim()) {
-    // String(null) is "null", but (null || '') is '', and String('') is ''.
-    // However, some DB values might be the literal string "null" if poorly imported.
+  if (isTruthyYes(product.requireBatchTracking) && !normalizedBatch) {
     const sourceBatch = sourceStockCheck?.batchNumber;
     const hasSourceBatch = sourceBatch && String(sourceBatch).trim() !== '' && String(sourceBatch).toLowerCase() !== 'null';
     
@@ -2296,9 +2299,9 @@ async function transferStock(data, reqUser) {
       clientId: clientId || null
     };
     let source = null;
-    if (batchNumber) {
+    if (normalizedBatch) {
       source = await ProductStock.findOne({
-        where: { ...sourceBaseWhere, batchNumber },
+        where: { ...sourceBaseWhere, batchNumber: normalizedBatch },
         transaction: t,
       });
     }
@@ -2314,8 +2317,13 @@ async function transferStock(data, reqUser) {
       throw new Error('Insufficient stock in source location/warehouse');
     }
 
+    // Bug Fix: Only fetch sourceRows matching the EXACT batch and bestBeforeDate of resolved source row
     const sourceRows = await ProductStock.findAll({
-      where: sourceBaseWhere,
+      where: {
+        ...sourceBaseWhere,
+        batchNumber: source.batchNumber,
+        bestBeforeDate: source.bestBeforeDate
+      },
       order: [['quantity', 'DESC']],
       transaction: t,
     });
@@ -2332,8 +2340,8 @@ async function transferStock(data, reqUser) {
         productId,
         warehouseId: toWarehouseId,
         locationId: toLocationId,
-        batchNumber: batchNumber || source.batchNumber || null,
-        bestBeforeDate: bestBeforeDate || source.bestBeforeDate || null,
+        batchNumber: normalizedBatch || source.batchNumber || null,
+        bestBeforeDate: normalizedBbd || source.bestBeforeDate || null,
         clientId: clientId || source.clientId || null
       },
       defaults: {
@@ -2352,10 +2360,14 @@ async function transferStock(data, reqUser) {
       const rowQty = Number(row.quantity) || 0;
       if (rowQty <= 0) continue;
       const consume = Math.min(rowQty, remaining);
-      await row.decrement('quantity', { by: consume, transaction: t });
+      
+      // Safe subtraction in-memory & save instead of DB expression reload
+      const newQty = Math.max(0, rowQty - consume);
+      row.quantity = newQty;
+      await row.save({ transaction: t });
+      
       // Auto-delete zero-quantity source rows after transfer
-      await row.reload({ transaction: t });
-      if ((Number(row.quantity) || 0) <= 0) {
+      if (newQty <= 0) {
         await row.destroy({ transaction: t });
       }
       remaining -= consume;
@@ -2387,8 +2399,8 @@ async function transferStock(data, reqUser) {
       productId,
       clientId,
       userId: reqUser.id,
-      batchNumber,
-      bestBeforeDate: bestBeforeDate || source.bestBeforeDate,
+      batchNumber: normalizedBatch || source.batchNumber,
+      bestBeforeDate: normalizedBbd || source.bestBeforeDate,
       referenceId: `TRANSFER: ${fromWarehouseId}:${fromLocationId} -> ${toWarehouseId}:${toLocationId}`,
       reason: reason || 'Internal Transfer'
     };
