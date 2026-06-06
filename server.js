@@ -637,5 +637,5 @@ async function start() {
   }
 }
 
-// Retrying server start to pick up new routes
+// Retrying server start to pick up new routes - triggered restart
 start();
