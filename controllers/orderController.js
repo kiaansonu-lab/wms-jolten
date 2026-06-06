@@ -71,5 +71,14 @@ async function allocate(req, res, next) {
   }
 }
 
-module.exports = { list, getById, create, update, remove, bulkAction, allocate };
+async function allocateAll(req, res, next) {
+  try {
+    const result = await orderService.allocateAllOrders(req.user);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { list, getById, create, update, remove, bulkAction, allocate, allocateAll };
 

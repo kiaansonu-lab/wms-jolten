@@ -160,6 +160,13 @@ async function create(data, reqUser) {
       country: data.country || null,
       phone: data.phone || null,
       email: data.email || null,
+      courierName: data.courierName || null,
+      courierService: data.courierService || null,
+      requestedShippingService: data.requestedShippingService || null,
+      noOfParcels: data.noOfParcels || 1,
+      totalWeight: data.totalWeight || 0.0,
+      tags: data.tags || null,
+      externalRef: data.externalRef || null,
     }, { transaction: t });
 
     let total = 0;
@@ -211,7 +218,10 @@ async function create(data, reqUser) {
           await inventoryService.reserveStockSoft({
             productId: product.id,
             warehouseId: targetWarehouseId,
-            quantity: qty
+            quantity: qty,
+            referenceId: order.orderNumber,
+            reason: `Order: ${order.orderNumber}`,
+            userId: reqUser.id
           }, t);
 
           // Create hard-allocated OrderItem
@@ -243,7 +253,10 @@ async function create(data, reqUser) {
           await inventoryService.reserveStockSoft({
             productId: product.id,
             warehouseId: targetWarehouseId,
-            quantity: qty
+            quantity: qty,
+            referenceId: order.orderNumber,
+            reason: `Order: ${order.orderNumber}`,
+            userId: reqUser.id
           }, t);
 
           // Create soft-allocated OrderItem (no locationId)
@@ -348,13 +361,19 @@ async function update(id, data, reqUser) {
           await inventoryService.unreserveStockSoft({
             productId: item.productId,
             warehouseId: whId,
-            quantity: item.quantity
+            quantity: item.quantity,
+            referenceId: order.orderNumber,
+            reason: `Order Update (Deallocate): ${order.orderNumber}`,
+            userId: reqUser.id
           }, t);
         } else {
           await inventoryService.unreserveStockSoft({
             productId: item.productId,
             warehouseId: whId,
-            quantity: item.quantity
+            quantity: item.quantity,
+            referenceId: order.orderNumber,
+            reason: `Order Update (Deallocate): ${order.orderNumber}`,
+            userId: reqUser.id
           }, t);
         }
       }
@@ -381,6 +400,13 @@ async function update(id, data, reqUser) {
       country: data.country !== undefined ? data.country : order.country,
       phone: data.phone !== undefined ? data.phone : order.phone,
       email: data.email !== undefined ? data.email : order.email,
+      courierName: data.courierName !== undefined ? data.courierName : order.courierName,
+      courierService: data.courierService !== undefined ? data.courierService : order.courierService,
+      requestedShippingService: data.requestedShippingService !== undefined ? data.requestedShippingService : order.requestedShippingService,
+      noOfParcels: data.noOfParcels !== undefined ? data.noOfParcels : order.noOfParcels,
+      totalWeight: data.totalWeight !== undefined ? data.totalWeight : order.totalWeight,
+      tags: data.tags !== undefined ? data.tags : order.tags,
+      externalRef: data.externalRef !== undefined ? data.externalRef : order.externalRef,
     }, { transaction: t });
 
     // 3. Update Items & Reserve NEW ones
@@ -423,7 +449,10 @@ async function update(id, data, reqUser) {
           await inventoryService.reserveStockSoft({
             productId: product.id,
             warehouseId: targetWarehouseId,
-            quantity: qty
+            quantity: qty,
+            referenceId: order.orderNumber,
+            reason: `Order: ${order.orderNumber}`,
+            userId: reqUser.id
           }, t);
 
           await OrderItem.create({
@@ -437,12 +466,16 @@ async function update(id, data, reqUser) {
             bestBeforeDate: row.bestBeforeDate || null
           }, { transaction: t });
         } else {
+          // Option 1: Soft Allocation
           hasSoftAllocations = true;
 
           await inventoryService.reserveStockSoft({
             productId: product.id,
             warehouseId: targetWarehouseId,
-            quantity: qty
+            quantity: qty,
+            referenceId: order.orderNumber,
+            reason: `Order: ${order.orderNumber}`,
+            userId: reqUser.id
           }, t);
 
           await OrderItem.create({
@@ -553,13 +586,19 @@ async function remove(id, reqUser) {
           await inventoryService.unreserveStockSoft({
             productId: item.productId,
             warehouseId,
-            quantity: item.quantity
+            quantity: item.quantity,
+            referenceId: order.orderNumber,
+            reason: `Order Deleted (Deallocate): ${order.orderNumber}`,
+            userId: reqUser.id
           }, t);
         } else {
           await inventoryService.unreserveStockSoft({
             productId: item.productId,
             warehouseId,
-            quantity: item.quantity
+            quantity: item.quantity,
+            referenceId: order.orderNumber,
+            reason: `Order Deleted (Deallocate): ${order.orderNumber}`,
+            userId: reqUser.id
           }, t);
         }
       }
@@ -627,13 +666,19 @@ async function bulkAction(data, reqUser) {
                 await inventoryService.unreserveStockSoft({
                   productId: item.productId,
                   warehouseId,
-                  quantity: item.quantity
+                  quantity: item.quantity,
+                  referenceId: order.orderNumber,
+                  reason: `Order Bulk Deleted (Deallocate): ${order.orderNumber}`,
+                  userId: reqUser.id
                 }, t);
               } else {
                 await inventoryService.unreserveStockSoft({
                   productId: item.productId,
                   warehouseId,
-                  quantity: item.quantity
+                  quantity: item.quantity,
+                  referenceId: order.orderNumber,
+                  reason: `Order Bulk Deleted (Deallocate): ${order.orderNumber}`,
+                  userId: reqUser.id
                 }, t);
               }
             }
@@ -656,15 +701,83 @@ async function bulkAction(data, reqUser) {
       } else if (action === 'mark_despatched') {
         await order.update({ status: 'SHIPPED' });
         affected++;
-      } else if (action === 'confirm') {
-        await order.update({ status: 'CONFIRMED' });
-        affected++;
+      } else if (action === 'confirm' || action === 'uncancel') {
+        const t = await sequelize.transaction();
+        try {
+          if (order.status === 'CANCELLED' || order.status === 'DRAFT') {
+            if (order.OrderItems) {
+              for (const item of order.OrderItems) {
+                const warehouseId = item.warehouseId || order.PickLists?.[0]?.warehouseId;
+                if (!warehouseId) continue;
+                await inventoryService.reserveStockSoft({
+                  productId: item.productId,
+                  warehouseId,
+                  quantity: item.quantity,
+                  referenceId: order.orderNumber,
+                  reason: `Order Re-Confirmed/Uncancelled: ${order.orderNumber}`,
+                  userId: reqUser.id
+                }, t);
+              }
+            }
+          }
+          await order.update({ status: 'CONFIRMED' }, { transaction: t });
+          await t.commit();
+          affected++;
+        } catch (e) {
+          await t.rollback();
+        }
       } else if (action === 'cancel') {
-        await order.update({ status: 'CANCELLED' });
-        affected++;
-      } else if (action === 'uncancel') {
-        await order.update({ status: 'CONFIRMED' });
-        affected++;
+        const t = await sequelize.transaction();
+        try {
+          if (order.status !== 'CANCELLED') {
+            if (order.OrderItems) {
+              for (const item of order.OrderItems) {
+                const warehouseId = item.warehouseId || order.PickLists?.[0]?.warehouseId;
+                if (!warehouseId) continue;
+
+                if (item.locationId) {
+                  const stockRow = await ProductStock.findOne({
+                    where: {
+                      productId: item.productId,
+                      warehouseId,
+                      locationId: item.locationId,
+                      batchNumber: item.batchNumber || null,
+                      bestBeforeDate: item.bestBeforeDate || null,
+                      companyId: order.companyId
+                    },
+                    transaction: t
+                  });
+                  if (stockRow) {
+                    const toDeduct = Math.min(Number(stockRow.reserved), item.quantity);
+                    await stockRow.decrement('reserved', { by: toDeduct, transaction: t });
+                  }
+                  await inventoryService.unreserveStockSoft({
+                    productId: item.productId,
+                    warehouseId,
+                    quantity: item.quantity,
+                    referenceId: order.orderNumber,
+                    reason: `Order Cancelled (Deallocate): ${order.orderNumber}`,
+                    userId: reqUser.id
+                  }, t);
+                } else {
+                  await inventoryService.unreserveStockSoft({
+                    productId: item.productId,
+                    warehouseId,
+                    quantity: item.quantity,
+                    referenceId: order.orderNumber,
+                    reason: `Order Cancelled (Deallocate): ${order.orderNumber}`,
+                    userId: reqUser.id
+                  }, t);
+                }
+              }
+            }
+          }
+          await order.update({ status: 'CANCELLED' }, { transaction: t });
+          await t.commit();
+          affected++;
+        } catch (e) {
+          await t.rollback();
+        }
       } else if (action === 'place_on_backorder') {
         await order.update({ status: 'BACKORDER' });
         affected++;
@@ -683,6 +796,9 @@ async function bulkAction(data, reqUser) {
           const existing = (order.tags || '').split(',').map(t => t.trim()).filter(t => t && t !== tag);
           await order.update({ tags: existing.join(', ') });
         }
+      } else if (action === 'allocate_stock') {
+        const allocationService = require('./allocationService');
+        await allocationService.allocateOrder(order.id);
         affected++;
       } else if (action === 'export_csv') {
         // handled client-side
@@ -696,4 +812,39 @@ async function bulkAction(data, reqUser) {
   return { affected, action };
 }
 
-module.exports = { list, getById, create, update, remove, bulkAction };
+async function allocateAllOrders(reqUser) {
+  const companyWhere = reqUser.role === 'super_admin' ? {} : { companyId: reqUser.companyId };
+  // Find all orders that are in DRAFT or BACKORDER status
+  const orders = await SalesOrder.findAll({
+    where: {
+      status: { [Op.in]: ['DRAFT', 'BACKORDER'] },
+      ...companyWhere
+    },
+    order: [
+      ['orderDate', 'ASC'],
+      ['id', 'ASC']
+    ]
+  });
+
+  const allocationService = require('./allocationService');
+  let successCount = 0;
+  let backorderCount = 0;
+  let errorCount = 0;
+
+  for (const order of orders) {
+    try {
+      const result = await allocationService.allocateOrder(order.id);
+      if (result.success) {
+        successCount++;
+      } else {
+        backorderCount++;
+      }
+    } catch (e) {
+      errorCount++;
+    }
+  }
+
+  return { total: orders.length, successCount, backorderCount, errorCount };
+}
+
+module.exports = { list, getById, create, update, remove, bulkAction, allocateAllOrders };

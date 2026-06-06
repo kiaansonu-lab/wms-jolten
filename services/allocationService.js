@@ -54,7 +54,8 @@ async function allocateOrder(orderId, transaction = null) {
           productId: item.productId,
           warehouseId: warehouseId,
           companyId: order.companyId,
-          quantity: { [Op.gt]: sequelize.col('reserved') }
+          quantity: { [Op.gt]: sequelize.col('reserved') },
+          locationId: { [Op.ne]: null }
         },
         include: [
           {

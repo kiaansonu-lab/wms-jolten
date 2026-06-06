@@ -1910,7 +1910,9 @@ async function listInventoryLedger(reqUser, query = {}) {
 
   // Event type filter
   if (query.eventType && query.eventType !== 'all') {
-    if (query.eventType === 'Shipments') {
+    if (['IN', 'OUT', 'TRANSFER', 'ALLOCATE', 'DEALLOCATE'].includes(query.eventType)) {
+      where.type = query.eventType;
+    } else if (query.eventType === 'Shipments') {
       where.type = 'OUT';
       where.reason = { [Op.or]: [
         { [Op.like]: '%Shipment%' },
@@ -2955,26 +2957,49 @@ async function bulkActionProducts(action, productIds, reqUser) {
 
 async function reserveStockSoft(data, t) {
   const { productId, warehouseId, quantity } = data;
-  const { Inventory } = require('../models');
+  const { Inventory, InventoryLog } = require('../models');
   const [inv] = await Inventory.findOrCreate({
     where: { productId, warehouseId },
     defaults: { quantity: 0, reservedQuantity: 0 },
     transaction: t
   });
   await inv.increment('reservedQuantity', { by: quantity, transaction: t });
+
+  await InventoryLog.create({
+    productId,
+    warehouseId,
+    type: 'ALLOCATE',
+    quantity,
+    referenceId: data.referenceId || null,
+    reason: data.reason || 'Stock Reservation',
+    userId: data.userId || null
+  }, { transaction: t });
+
   return { success: true };
 }
 
 async function unreserveStockSoft(data, t) {
   const { productId, warehouseId, quantity } = data;
-  const { Inventory } = require('../models');
+  const { Inventory, InventoryLog } = require('../models');
   const inv = await Inventory.findOne({
     where: { productId, warehouseId },
     transaction: t
   });
   if (inv) {
     const toDeduct = Math.min(Number(inv.reservedQuantity), quantity);
-    await inv.decrement('reservedQuantity', { by: toDeduct, transaction: t });
+    if (toDeduct > 0) {
+      await inv.decrement('reservedQuantity', { by: toDeduct, transaction: t });
+
+      await InventoryLog.create({
+        productId,
+        warehouseId,
+        type: 'DEALLOCATE',
+        quantity: -toDeduct,
+        referenceId: data.referenceId || null,
+        reason: data.reason || 'Stock Unreservation',
+        userId: data.userId || null
+      }, { transaction: t });
+    }
   }
   return { success: true };
 }

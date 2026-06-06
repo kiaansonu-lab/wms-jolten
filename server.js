@@ -11,6 +11,7 @@ try {
 } catch (_) {
   /* multer may still work if dir exists elsewhere */
 }
+
 const { sequelize } = require('./models');
 const routes = require('./routes');
 const superadminController = require('./controllers/superadminController');
@@ -58,6 +59,7 @@ const soWriteRoles = ['super_admin', 'company_admin'];
 app.get('/api/orders/sales', authenticate, requireRole(...soRoles), orderController.list);
 app.post('/api/orders/sales', authenticate, requireRole(...soWriteRoles), orderController.create);
 app.post('/api/orders/sales/bulk-action', authenticate, requireRole(...soWriteRoles), orderController.bulkAction);
+app.post('/api/orders/sales/allocate-all', authenticate, requireRole('super_admin', 'company_admin', 'warehouse_manager', 'inventory_manager'), orderController.allocateAll);
 app.get('/api/orders/sales/:id', authenticate, requireRole(...soRoles), orderController.getById);
 app.put('/api/orders/sales/:id', authenticate, requireRole(...soWriteRoles), orderController.update);
 app.delete('/api/orders/sales/:id', authenticate, requireRole(...soWriteRoles), orderController.remove);
@@ -124,6 +126,38 @@ app.post('/api/products/:id/alternative-skus', authenticate, requireRole(...invP
 
 const returnRoutes = require('./routes/returnRoutes');
 app.use('/api/returns', returnRoutes);
+
+app.get('/api/test-debug', async (req, res) => {
+  try {
+    const { InventoryLog, Inventory, Product } = require('./models');
+    const logCount = await InventoryLog.count();
+    const nullStockLogs = await InventoryLog.count({
+      where: {
+        newStockLevel: null
+      }
+    });
+    const sampleLogs = await InventoryLog.findAll({
+      limit: 10,
+      order: [['id', 'DESC']],
+      include: [{ model: Product, attributes: ['sku', 'name'], required: false }]
+    });
+    res.json({
+      success: true,
+      dialect: sequelize.getDialect(),
+      database: sequelize.config.database,
+      host: sequelize.config.host,
+      logCount,
+      nullStockLogs,
+      sampleLogs
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      stack: err.stack
+    });
+  }
+});
 
 app.use(routes);
 
@@ -193,6 +227,10 @@ async function start() {
         { t: 'inventory_logs', c: 'best_before_date', type: 'DATE' },
         { t: 'inventory_logs', c: 'user_id', type: 'INT' },
         { t: 'inventory_logs', c: 'reason', type: 'VARCHAR(255)' },
+        { t: 'inventory_logs', c: 'new_stock_level', type: 'INT' },
+        { t: 'inventory_logs', c: 'new_allocated_level', type: 'INT' },
+        { t: 'inventory_logs', c: 'new_on_hand_level', type: 'INT' },
+        { t: 'inventory_logs', c: 'new_off_hand_level', type: 'INT DEFAULT 0' },
         { t: 'product_stocks', c: 'batch_id', type: 'INT' },
         { t: 'product_stocks', c: 'client_id', type: 'INT' },
         { t: 'product_stocks', c: 'location_id', type: 'INT' },
@@ -374,6 +412,49 @@ async function start() {
       }
     } catch (e) {
       console.warn('[DB] Backfill error:', e.message);
+    }
+    // BACKFILL running level snapshots for old InventoryLogs
+    try {
+      const { InventoryLog, Inventory } = require('./models');
+      const { Op } = require('sequelize');
+      const logsToFix = await InventoryLog.findAll({
+        where: {
+          [Op.or]: [
+            { newStockLevel: null },
+            { newAllocatedLevel: null },
+            { newOnHandLevel: null }
+          ]
+        }
+      });
+      if (logsToFix.length > 0) {
+        console.log(`[DB] Backfilling running level snapshots for ${logsToFix.length} legacy logs...`);
+        const inventories = await Inventory.findAll();
+        const invMap = {};
+        for (const inv of inventories) {
+          invMap[`${inv.productId}-${inv.warehouseId}`] = inv;
+        }
+
+        const promises = logsToFix.map(log => {
+          const inv = invMap[`${log.productId}-${log.warehouseId}`];
+          const updateData = inv ? {
+            newStockLevel: inv.quantity || 0,
+            newAllocatedLevel: inv.reservedQuantity || 0,
+            newOnHandLevel: Math.max(0, (inv.quantity || 0) - (inv.reservedQuantity || 0)),
+            newOffHandLevel: 0
+          } : {
+            newStockLevel: 0,
+            newAllocatedLevel: 0,
+            newOnHandLevel: 0,
+            newOffHandLevel: 0
+          };
+          return log.update(updateData);
+        });
+
+        await Promise.all(promises);
+        console.log('[DB] Legacy logs level backfill complete.');
+      }
+    } catch (e) {
+      console.warn('[DB] Failed to backfill legacy log levels:', e.message);
     }
 
     // BACKFILL SalesOrders with realistic seed data if they don't have it
