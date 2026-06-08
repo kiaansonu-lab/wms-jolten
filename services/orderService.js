@@ -12,7 +12,13 @@ async function list(reqUser, query = {}) {
 
   // Filter: Order Status
   if (query.status && query.status !== 'all') {
-    where.status = query.status;
+    if (typeof query.status === 'string' && query.status.includes(',')) {
+      where.status = { [Op.in]: query.status.split(',') };
+    } else if (Array.isArray(query.status)) {
+      where.status = { [Op.in]: query.status };
+    } else {
+      where.status = query.status;
+    }
   }
 
   // Filter: Channel
@@ -703,32 +709,69 @@ async function bulkAction(data, reqUser) {
           await t.rollback();
         }
       } else if (action === 'mark_despatched') {
-        await order.update({ status: 'SHIPPED' });
-        affected++;
-      } else if (action === 'confirm' || action === 'uncancel') {
         const t = await sequelize.transaction();
         try {
-          if (order.status === 'CANCELLED' || order.status === 'DRAFT') {
-            if (order.OrderItems) {
-              for (const item of order.OrderItems) {
-                const warehouseId = item.warehouseId || order.PickLists?.[0]?.warehouseId;
-                if (!warehouseId) continue;
-                await inventoryService.reserveStockSoft({
+          await order.update({ status: 'SHIPPED' }, { transaction: t });
+          
+          let shipment = await Shipment.findOne({ where: { salesOrderId: order.id }, transaction: t });
+          if (!shipment) {
+            shipment = await Shipment.create({
+              salesOrderId: order.id,
+              companyId: order.companyId,
+              packedBy: reqUser.id,
+              courierName: order.courierName || 'Manual',
+              trackingNumber: order.trackingNumber || null,
+              weight: order.totalWeight || null,
+              dispatchDate: new Date().toISOString().slice(0, 10),
+              deliveryStatus: 'SHIPPED',
+              stockDeducted: false
+            }, { transaction: t });
+          } else {
+            await shipment.update({
+              deliveryStatus: 'SHIPPED',
+              dispatchDate: shipment.dispatchDate || new Date().toISOString().slice(0, 10)
+            }, { transaction: t });
+          }
+
+          if (!shipment.stockDeducted) {
+            const orderItems = await OrderItem.findAll({ where: { salesOrderId: order.id }, transaction: t });
+            let warehouseId = order.PickLists?.[0]?.warehouseId;
+            if (!warehouseId && orderItems.length > 0) {
+              warehouseId = orderItems[0].warehouseId;
+            }
+            if (warehouseId) {
+              for (const item of orderItems) {
+                await inventoryService.shipStock({
                   productId: item.productId,
+                  companyId: order.companyId,
                   warehouseId,
+                  clientId: order.customerId || null,
                   quantity: item.quantity,
-                  referenceId: order.orderNumber,
-                  reason: `Order Re-Confirmed/Uncancelled: ${order.orderNumber}`,
+                  referenceId: `SHIP:${shipment.id}`,
                   userId: reqUser.id
                 }, t);
               }
+              await shipment.update({ stockDeducted: true }, { transaction: t });
             }
           }
-          await order.update({ status: 'CONFIRMED' }, { transaction: t });
+
           await t.commit();
           affected++;
         } catch (e) {
           await t.rollback();
+          throw e;
+        }
+      } else if (action === 'confirm' || action === 'uncancel') {
+        const t = await sequelize.transaction();
+        try {
+          await order.update({ status: 'CONFIRMED' }, { transaction: t });
+          await t.commit();
+          
+          const allocationService = require('./allocationService');
+          await allocationService.allocateOrder(order.id);
+          affected++;
+        } catch (e) {
+          affected++; // Ignore allocation errors, still count as confirmed/uncancelled
         }
       } else if (action === 'cancel') {
         const t = await sequelize.transaction();
@@ -776,18 +819,106 @@ async function bulkAction(data, reqUser) {
               }
             }
           }
+
+          const pickLists = await PickList.findAll({ where: { salesOrderId: order.id }, transaction: t });
+          for (const pl of pickLists) {
+            await PickListItem.destroy({ where: { pickListId: pl.id }, transaction: t });
+            await PackingTask.destroy({ where: { pickListId: pl.id }, transaction: t });
+            await pl.destroy({ transaction: t });
+          }
+          await PackingTask.destroy({ where: { salesOrderId: order.id }, transaction: t });
+
+          if (order.OrderItems) {
+            for (const item of order.OrderItems) {
+              await item.update({
+                locationId: null,
+                batchNumber: null,
+                bestBeforeDate: null
+              }, { transaction: t });
+            }
+          }
+
           await order.update({ status: 'CANCELLED' }, { transaction: t });
           await t.commit();
           affected++;
         } catch (e) {
           await t.rollback();
+          throw e;
         }
       } else if (action === 'place_on_backorder') {
         await order.update({ status: 'BACKORDER' });
         affected++;
       } else if (action === 'mark_picked') {
-        await order.update({ status: 'PICKED' });
-        affected++;
+        const t = await sequelize.transaction();
+        try {
+          await order.update({ status: 'PICKED' }, { transaction: t });
+
+          const existingPickLists = await PickList.findAll({ where: { salesOrderId: order.id }, transaction: t });
+          if (existingPickLists.length > 0) {
+            for (const pl of existingPickLists) {
+              await pl.update({ status: 'PICKED' }, { transaction: t });
+              
+              const items = await PickListItem.findAll({ where: { pickListId: pl.id }, transaction: t });
+              for (const item of items) {
+                await item.update({ quantityPicked: item.quantityRequired }, { transaction: t });
+              }
+
+              const existingTask = await PackingTask.findOne({ where: { pickListId: pl.id }, transaction: t });
+              if (!existingTask) {
+                await PackingTask.create({
+                  salesOrderId: order.id,
+                  pickListId: pl.id,
+                  status: 'NOT_STARTED',
+                  warehouseId: pl.warehouseId
+                }, { transaction: t });
+              }
+            }
+          } else {
+            const orderItems = order.OrderItems || [];
+            let defaultWhId = null;
+            if (orderItems.some(item => !item.warehouseId)) {
+              const defaultWh = await Warehouse.findOne({ transaction: t });
+              if (defaultWh) defaultWhId = defaultWh.id;
+            }
+
+            const warehouseGroups = {};
+            for (const item of orderItems) {
+              const whId = item.warehouseId || defaultWhId || 1;
+              if (!warehouseGroups[whId]) warehouseGroups[whId] = [];
+              warehouseGroups[whId].push(item);
+            }
+
+            for (const whId in warehouseGroups) {
+              const pl = await PickList.create({
+                salesOrderId: order.id,
+                warehouseId: whId,
+                status: 'PICKED'
+              }, { transaction: t });
+
+              for (const item of warehouseGroups[whId]) {
+                await PickListItem.create({
+                  pickListId: pl.id,
+                  productId: item.productId,
+                  quantityRequired: item.quantity,
+                  quantityPicked: item.quantity
+                }, { transaction: t });
+              }
+
+              await PackingTask.create({
+                salesOrderId: order.id,
+                pickListId: pl.id,
+                status: 'NOT_STARTED',
+                warehouseId: whId
+              }, { transaction: t });
+            }
+          }
+
+          await t.commit();
+          affected++;
+        } catch (e) {
+          await t.rollback();
+          throw e;
+        }
       } else if (action === 'add_tag') {
         if (tag) {
           const existing = (order.tags || '').split(',').map(t => t.trim()).filter(Boolean);
@@ -808,6 +939,7 @@ async function bulkAction(data, reqUser) {
         // handled client-side
         affected++;
       }
+
     } catch (e) {
       // skip individual failures
     }

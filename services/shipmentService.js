@@ -11,7 +11,7 @@ async function list(reqUser, query = {}) {
     where,
     order: [['createdAt', 'DESC']],
     include: [
-      { association: 'SalesOrder', attributes: ['id', 'orderNumber', 'status'], include: ['Client'] },
+      { association: 'SalesOrder', include: ['Client'] },
       { association: 'Company', attributes: ['id', 'name', 'code'] },
       { association: 'User', attributes: ['id', 'name', 'email'], required: false },
     ],
@@ -35,7 +35,7 @@ async function getById(id, reqUser) {
 async function create(data, reqUser) {
   const order = await SalesOrder.findByPk(data.salesOrderId);
   if (!order) throw new Error('Order not found');
-  if (order.status !== 'PACKED') throw new Error('Order must be packed first');
+  if (order.status !== 'PACKED' && order.status !== 'CONFIRMED') throw new Error('Order must be packed or confirmed first');
   if (reqUser.role !== 'super_admin' && order.companyId !== reqUser.companyId) throw new Error('Order not found');
 
   const existing = await Shipment.findOne({ where: { salesOrderId: data.salesOrderId } });

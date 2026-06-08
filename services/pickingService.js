@@ -21,7 +21,7 @@ async function list(reqUser, query = {}) {
   if (query.status) where.status = query.status;
   const orderInclude = {
     association: 'SalesOrder',
-    attributes: ['id', 'orderNumber', 'status', 'companyId'],
+    attributes: ['id', 'orderNumber', 'status', 'companyId', 'recipientName', 'customerId'],
     include: [{ association: 'Client', attributes: ['name'] }]
   };
   if (reqUser.role === 'warehouse_manager' || reqUser.role === 'company_admin') {

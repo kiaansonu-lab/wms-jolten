@@ -478,9 +478,19 @@ async function start() {
           needsUpdate = true;
         }
 
-        if (!order.recipientName) {
+        if (!order.recipientName || order.recipientName === 'Demo Customer' || order.recipientName.toLowerCase() === 'demo') {
           const cust = order.customerId ? await Customer.findByPk(order.customerId) : null;
-          updates.recipientName = cust?.contactPerson || cust?.name || 'Demo Customer';
+          let nameVal = '-';
+          if (cust) {
+            const possibleNames = [cust.contactPerson, cust.name];
+            for (const n of possibleNames) {
+              if (n && n.toLowerCase() !== 'demo' && n.toLowerCase() !== 'demo customer' && n.trim() !== '-') {
+                nameVal = n;
+                break;
+              }
+            }
+          }
+          updates.recipientName = nameVal;
           needsUpdate = true;
         }
 

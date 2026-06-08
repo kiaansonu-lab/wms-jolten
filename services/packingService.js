@@ -26,7 +26,7 @@ async function list(reqUser, query = {}) {
         association: 'SalesOrder',
         where: (reqUser.companyId ? { companyId: reqUser.companyId } : {}),
         required: true,
-        attributes: ['id', 'orderNumber', 'status'],
+        attributes: ['id', 'orderNumber', 'status', 'recipientName', 'customerId'],
         include: ['Client']
       },
       {
