@@ -1,4 +1,4 @@
-const { SalesOrder, OrderItem, Product, ProductStock, Location, Inventory, sequelize } = require('../models');
+const { SalesOrder, OrderItem, Product, ProductStock, Location, Inventory, Warehouse, sequelize } = require('../models');
 const { Op } = require('sequelize');
 
 /**
@@ -61,6 +61,12 @@ async function allocateOrder(orderId, transaction = null) {
           {
             model: Location,
             attributes: ['id', 'pickSequence']
+          },
+          {
+            model: Warehouse,
+            where: { status: 'ACTIVE' },
+            required: true,
+            attributes: []
           }
         ],
         order: [

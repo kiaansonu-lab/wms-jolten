@@ -100,8 +100,8 @@ OrderItem.belongsTo(Product, { foreignKey: 'productId' });
 Product.hasMany(OrderItem, { foreignKey: 'productId' });
 OrderItem.belongsTo(Warehouse, { foreignKey: 'warehouseId' });
 Warehouse.hasMany(OrderItem, { foreignKey: 'warehouseId' });
-OrderItem.belongsTo(Location, { foreignKey: 'locationId' });
-Location.hasMany(OrderItem, { foreignKey: 'locationId' });
+OrderItem.belongsTo(Location, { foreignKey: 'locationId', as: 'Location' });
+Location.hasMany(OrderItem, { foreignKey: 'locationId', as: 'OrderItems' });
 Product.belongsTo(Location, { foreignKey: 'defaultPickingLocationId', as: 'DefaultPickingLocation' });
 Location.hasMany(Product, { foreignKey: 'defaultPickingLocationId', as: 'DefaultPickingProducts' });
 

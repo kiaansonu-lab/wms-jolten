@@ -78,7 +78,8 @@ async function list(reqUser, query = {}) {
         required: false,
         include: [
           { association: 'Product', attributes: ['id', 'name', 'sku', 'weight', 'weightUnit'] },
-          { association: 'Warehouse', attributes: ['id', 'name'] }
+          { association: 'Warehouse', attributes: ['id', 'name'] },
+          { association: 'Location', attributes: ['id', 'name'] }
         ]
       },
       { association: 'PickLists', include: [{ association: 'PickListItems', include: [{ association: 'Product' }] }] },
@@ -102,7 +103,7 @@ async function getById(id, reqUser) {
     include: [
       { association: 'Company' },
       { association: 'Client' },
-      { association: 'OrderItems', include: ['Product', 'Warehouse'] },
+      { association: 'OrderItems', include: ['Product', 'Warehouse', 'Location'] },
       { association: 'PickLists', include: ['PickListItems', 'Warehouse', 'User'] },
       { association: 'PackingTasks', include: ['User'] },
       { association: 'Shipment' },
@@ -178,7 +179,7 @@ async function create(data, reqUser) {
     }, { transaction: t });
 
     let total = 0;
-    const warehouse = await Warehouse.findOne({ where: { companyId }, transaction: t });
+    const warehouse = await Warehouse.findOne({ where: { companyId, status: 'ACTIVE' }, transaction: t });
     let hasSoftAllocations = false;
 
     if (data.items && data.items.length) {
@@ -194,6 +195,7 @@ async function create(data, reqUser) {
         if (!targetWarehouseId) {
           const firstStock = await ProductStock.findOne({
             where: { productId: product.id, companyId, quantity: { [Op.gt]: sequelize.col('reserved') } },
+            include: [{ model: Warehouse, where: { status: 'ACTIVE' }, required: true, attributes: [] }],
             transaction: t
           });
           targetWarehouseId = firstStock?.warehouseId;
@@ -213,6 +215,7 @@ async function create(data, reqUser) {
               bestBeforeDate: row.bestBeforeDate || null,
               companyId
             },
+            include: [{ model: Warehouse, where: { status: 'ACTIVE' }, required: true, attributes: [] }],
             transaction: t
           });
           if (!stockRow || (stockRow.quantity - stockRow.reserved) < qty) {
@@ -250,6 +253,7 @@ async function create(data, reqUser) {
           // Verify total stock in selected warehouse is sufficient for soft reservation
           const stocks = await ProductStock.findAll({
             where: { productId: product.id, warehouseId: targetWarehouseId, companyId },
+            include: [{ model: Warehouse, where: { status: 'ACTIVE' }, required: true, attributes: [] }],
             transaction: t
           });
           const totalAvail = stocks.reduce((sum, s) => sum + (Number(s.quantity) - Number(s.reserved)), 0);
@@ -344,8 +348,8 @@ async function update(id, data, reqUser) {
       throw new Error('Only DRAFT, CONFIRMED, or BACKORDER orders can be edited');
     }
 
-    // 1. Unreserve OLD items correctly
-    if (order.OrderItems) {
+    // 1. Unreserve OLD items correctly (only if we are updating items)
+    if (data.items && Array.isArray(data.items) && order.OrderItems) {
       for (const item of order.OrderItems) {
         const whId = item.warehouseId || order.PickLists?.[0]?.warehouseId;
         if (!whId) continue;
@@ -424,7 +428,7 @@ async function update(id, data, reqUser) {
       await OrderItem.destroy({ where: { salesOrderId: order.id }, transaction: t });
       let total = 0;
 
-      const currentWarehouse = await Warehouse.findOne({ where: { companyId: order.companyId }, transaction: t });
+      const currentWarehouse = await Warehouse.findOne({ where: { companyId: order.companyId, status: 'ACTIVE' }, transaction: t });
       let hasSoftAllocations = false;
 
       for (const row of data.items) {
@@ -449,6 +453,7 @@ async function update(id, data, reqUser) {
               bestBeforeDate: row.bestBeforeDate || null,
               companyId: order.companyId
             },
+            include: [{ model: Warehouse, where: { status: 'ACTIVE' }, required: true, attributes: [] }],
             transaction: t
           });
           if (!stockRow || (stockRow.quantity - stockRow.reserved) < qty) {

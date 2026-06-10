@@ -2052,9 +2052,62 @@ async function listInventoryLedger(reqUser, query = {}) {
     offset
   });
 
+  const locationIds = [];
+  const warehouseIds = [];
+  rows.forEach(r => {
+    if (r.type === 'TRANSFER' && r.referenceId) {
+      const m = String(r.referenceId).match(/TRANSFER:\s*(\d+):(\d+)\s*->\s*(\d+):(\d+)/i);
+      if (m) {
+        warehouseIds.push(Number(m[1]), Number(m[3]));
+        locationIds.push(Number(m[2]), Number(m[4]));
+      }
+    }
+  });
+
+  const uniqueLocationIds = [...new Set(locationIds.filter(Boolean))];
+  const uniqueWarehouseIds = [...new Set(warehouseIds.filter(Boolean))];
+
+  let locationsMap = {};
+  let warehousesMap = {};
+
+  if (uniqueLocationIds.length > 0) {
+    const locs = await Location.findAll({
+      where: { id: uniqueLocationIds },
+      attributes: ['id', 'name', 'code']
+    });
+    locs.forEach(loc => {
+      locationsMap[loc.id] = loc.get({ plain: true });
+    });
+  }
+
+  if (uniqueWarehouseIds.length > 0) {
+    const whs = await Warehouse.findAll({
+      where: { id: uniqueWarehouseIds },
+      attributes: ['id', 'name', 'code']
+    });
+    whs.forEach(wh => {
+      warehousesMap[wh.id] = wh.get({ plain: true });
+    });
+  }
+
   const items = rows.map(l => {
     const j = l.get({ plain: true });
     j.createdBy = j.User;
+    
+    if (j.type === 'TRANSFER' && j.referenceId) {
+      const m = String(j.referenceId).match(/TRANSFER:\s*(\d+):(\d+)\s*->\s*(\d+):(\d+)/i);
+      if (m) {
+        const fromWhId = Number(m[1]);
+        const fromLocId = Number(m[2]);
+        const toWhId = Number(m[3]);
+        const toLocId = Number(m[4]);
+        
+        j.fromWarehouse = warehousesMap[fromWhId] || { id: fromWhId, name: `Warehouse ${fromWhId}`, code: `WH-${fromWhId}` };
+        j.fromLocation = locationsMap[fromLocId] || { id: fromLocId, name: `Bin ${fromLocId}`, code: `BIN-${fromLocId}` };
+        j.toWarehouse = warehousesMap[toWhId] || { id: toWhId, name: `Warehouse ${toWhId}`, code: `WH-${toWhId}` };
+        j.toLocation = locationsMap[toLocId] || { id: toLocId, name: `Bin ${toLocId}`, code: `BIN-${toLocId}` };
+      }
+    }
     
     // Determine Event Type
     let eventType = 'Adjustments';

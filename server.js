@@ -129,26 +129,10 @@ app.use('/api/returns', returnRoutes);
 
 app.get('/api/test-debug', async (req, res) => {
   try {
-    const { InventoryLog, Inventory, Product } = require('./models');
-    const logCount = await InventoryLog.count();
-    const nullStockLogs = await InventoryLog.count({
-      where: {
-        newStockLevel: null
-      }
-    });
-    const sampleLogs = await InventoryLog.findAll({
-      limit: 10,
-      order: [['id', 'DESC']],
-      include: [{ model: Product, attributes: ['sku', 'name'], required: false }]
-    });
+    const [columns] = await sequelize.query("DESCRIBE order_items");
     res.json({
       success: true,
-      dialect: sequelize.getDialect(),
-      database: sequelize.config.database,
-      host: sequelize.config.host,
-      logCount,
-      nullStockLogs,
-      sampleLogs
+      columns
     });
   } catch (err) {
     res.status(500).json({

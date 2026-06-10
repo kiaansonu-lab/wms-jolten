@@ -9,9 +9,9 @@ router.get('/', requireRole('super_admin', 'company_admin', 'warehouse_manager',
 router.get('/:id', requireRole('super_admin', 'company_admin', 'warehouse_manager', 'picker'), pickingController.getById);
 router.put('/:id/assign', requireRole('super_admin', 'company_admin', 'warehouse_manager'), pickingController.assignPicker);
 router.post('/:id/assign', requireRole('super_admin', 'company_admin', 'warehouse_manager'), pickingController.assignPicker);
-router.post('/:id/start', requireRole('picker'), pickingController.startPicking);
-router.post('/:id/reject', requireRole('picker'), pickingController.rejectAssignment);
-router.put('/:id/items/:itemId', requireRole('picker'), pickingController.updatePickedQuantity);
-router.post('/:id/complete', requireRole('picker'), pickingController.completePicking);
+router.post('/:id/start', requireRole('super_admin', 'company_admin', 'warehouse_manager', 'picker'), pickingController.startPicking);
+router.post('/:id/reject', requireRole('super_admin', 'company_admin', 'warehouse_manager', 'picker'), pickingController.rejectAssignment);
+router.put('/:id/items/:itemId', requireRole('super_admin', 'company_admin', 'warehouse_manager', 'picker'), pickingController.updatePickedQuantity);
+router.post('/:id/complete', requireRole('super_admin', 'company_admin', 'warehouse_manager', 'picker'), pickingController.completePicking);
 
 module.exports = router;

@@ -45,7 +45,13 @@ async function list(reqUser, query = {}) {
 async function getById(id, reqUser) {
   const task = await PackingTask.findByPk(id, {
     include: [
-      { association: 'SalesOrder', include: ['OrderItems', 'Client'] },
+      { 
+        association: 'SalesOrder', 
+        include: [
+          { association: 'OrderItems', include: ['Product', 'Warehouse', 'Location'] },
+          'Client'
+        ] 
+      },
       { association: 'PickList', include: ['PickListItems'] },
       { association: 'User', attributes: { exclude: ['passwordHash'] }, required: false },
     ],
