@@ -76,7 +76,8 @@ async function createProduct(req, res, next) {
 async function bulkCreateProducts(req, res, next) {
   try {
     const products = Array.isArray(req.body.products) ? req.body.products : req.body;
-    const data = await inventoryService.bulkCreateProducts(products, req.user);
+    const companyId = req.body.companyId;
+    const data = await inventoryService.bulkCreateProducts(products, req.user, companyId);
     res.status(201).json({ success: true, data });
   } catch (err) {
     if (err.message === 'No products to import') return res.status(400).json({ success: false, message: err.message });

@@ -30,18 +30,83 @@ const InventoryLog = sequelize.define('InventoryLog', {
   hooks: {
     beforeCreate: async (log, options) => {
       try {
-        const Inventory = log.sequelize.models.Inventory;
+        const { ProductStock, OrderItem, SalesOrder, Inventory } = log.sequelize.models;
+
+        // 1. Calculate physical stock levels from ProductStock
+        const psResult = await ProductStock.findOne({
+          where: { productId: log.productId, warehouseId: log.warehouseId },
+          attributes: [
+            [log.sequelize.fn('SUM', log.sequelize.col('quantity')), 'totalQty'],
+            [log.sequelize.fn('SUM', log.sequelize.col('reserved')), 'totalReserved']
+          ],
+          raw: true,
+          transaction: options.transaction
+        });
+
+        const physicalQty = Number(psResult?.totalQty) || 0;
+        const hardReserved = Number(psResult?.totalReserved) || 0;
+
+        // 2. Calculate soft reservations from OrderItems for active orders
+        const softResult = await OrderItem.findOne({
+          where: {
+            productId: log.productId,
+            warehouseId: log.warehouseId,
+            locationId: null
+          },
+          include: [{
+            model: SalesOrder,
+            as: 'SalesOrder',
+            where: {
+              status: ['DRAFT', 'CONFIRMED', 'BACKORDER', 'PICKING_IN_PROGRESS', 'PICKED', 'PACKING_IN_PROGRESS', 'PACKED']
+            },
+            attributes: []
+          }],
+          attributes: [
+            [log.sequelize.fn('SUM', log.sequelize.col('quantity')), 'totalSoftReserved']
+          ],
+          raw: true,
+          transaction: options.transaction
+        });
+
+        const softReserved = Number(softResult?.totalSoftReserved) || 0;
+
+        // 3. Determine the final physical and reserved levels
+        let finalPhysical = physicalQty;
+        let finalReserved = hardReserved + softReserved;
+
+        // Adjust for soft reservation changes if they haven't been written to the OrderItem table yet
+        if (log.type === 'ALLOCATE') {
+          finalReserved += Number(log.quantity) || 0;
+        } else if (log.type === 'DEALLOCATE') {
+          finalReserved += Number(log.quantity) || 0;
+        }
+
+        // 4. Ensure values are non-negative
+        finalPhysical = Math.max(0, finalPhysical);
+        finalReserved = Math.max(0, finalReserved);
+        const finalOnHand = Math.max(0, finalPhysical - finalReserved);
+
+        // 5. Update/Heal summary Inventory table
         if (Inventory) {
           const [inv] = await Inventory.findOrCreate({
             where: { productId: log.productId, warehouseId: log.warehouseId },
-            defaults: { quantity: 0, reservedQuantity: 0 },
+            defaults: { quantity: finalPhysical, reservedQuantity: finalReserved },
             transaction: options.transaction
           });
-          log.newStockLevel = inv.quantity || 0;
-          log.newAllocatedLevel = inv.reservedQuantity || 0;
-          log.newOnHandLevel = Math.max(0, (inv.quantity || 0) - (inv.reservedQuantity || 0));
-          log.newOffHandLevel = 0;
+          await inv.update({
+            quantity: finalPhysical,
+            reservedQuantity: finalReserved
+          }, { 
+            transaction: options.transaction,
+            silent: true 
+          });
         }
+
+        // 6. Assign levels to log record
+        log.newStockLevel = finalPhysical;
+        log.newAllocatedLevel = finalReserved;
+        log.newOnHandLevel = finalOnHand;
+        log.newOffHandLevel = 0;
       } catch (err) {
         console.error('Error calculating stock levels in beforeCreate hook:', err);
       }

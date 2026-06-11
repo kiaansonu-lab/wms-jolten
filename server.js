@@ -610,6 +610,8 @@ async function start() {
       console.log('Purchase orders: /api/purchase-orders');
       console.log('Goods receiving: /api/goods-receiving');
     });
+
+
   } catch (err) {
     console.error('Unable to start server:', err);
 

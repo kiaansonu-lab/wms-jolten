@@ -188,6 +188,7 @@ async function listProducts(reqUser, query = {}) {
         where: query.supplierId ? { supplierId: query.supplierId } : undefined
       },
       { association: 'Supplier', attributes: ['id', 'name'], required: false },
+      { association: 'DefaultPickingLocation', attributes: ['id', 'name', 'code'], required: false }
     ],
     subQuery: false, // Required when using Op.or with includes
   });
@@ -197,36 +198,66 @@ async function listProducts(reqUser, query = {}) {
 async function exportProductsCsv(reqUser, query = {}) {
   const products = await listProducts(reqUser, query);
   const headers = [
-    'SKU', 'Name', 'Barcode', 'Category', 'Supplier', 'Status', 'Price', 'Cost Price', 'Pack Size',
-    'VAT Rate', 'UOM', 'Color', 'Heat Sensitive', 'Batch Tracking', 'Weight', 'Dimensions', 'Reorder Level', 'Stock (Total)', 'Description', 'Images'
+    'SKU', 'Product Name', 'Barcode', 'Description', 'Product Type', 'Status', 'Selling Price', 'Cost Price',
+    'Category', 'Supplier', 'Unit of Measure', 'VAT Rate', 'VAT Code', 'Customs Tariff',
+    'Heat Sensitive', 'Perishable', 'Require Batch Tracking', 'Shelf Life Days',
+    'Reorder Level', 'Reorder Qty', 'Max Stock',
+    'Length', 'Width', 'Height', 'Dimension Unit', 'Weight', 'Weight Unit',
+    'Pack Size', 'Image URL', 'BB Warning Period (Days)',
+    'Default Picking Location', 'Discontinued',
+    'Carton Barcode', 'Carton Case Size', 'Carton Description',
+    'HD SKU', 'HD Sale SKU', 'Warehouse ID', 'eBay ID', 'Amazon SKU', 'Amazon SKU Split Before', 'Amazon MPN SKU', 'Amazon ID SKU'
   ];
 
   const rows = products.map(p => {
-    const totalStock = (p.ProductStocks || []).reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
-    const weight = `${p.weight || ''} ${p.weightUnit || ''}`.trim();
-    const dims = `${p.length || ''}x${p.width || ''}x${p.height || ''} ${p.dimensionUnit || ''}`.trim();
+    const rawCost = p.costPrice != null ? Number(p.costPrice) : 0;
+    const packSize = p.packSize || 1;
+    const supplierCost = rawCost * packSize;
 
     return [
       p.sku,
       p.name,
       p.barcode || '',
+      p.description || '',
+      p.productType || 'SIMPLE',
+      p.status || 'ACTIVE',
+      p.price ?? 0,
+      supplierCost,
       p.Category?.name || '',
       p.Supplier?.name || '',
-      p.status,
-      p.price,
-      p.costPrice,
-      p.packSize || 1,
-      p.vatRate,
-      p.unitOfMeasure || '',
-      p.color || '',
+      p.unitOfMeasure || 'EACH',
+      p.vatRate ?? '',
+      p.vatCode || '',
+      p.customsTariff || '',
       p.heatSensitive || 'no',
+      p.perishable || 'no',
       p.requireBatchTracking || 'no',
-      weight,
-      dims,
-      p.reorderLevel,
-      totalStock,
-      p.description || '',
-      Array.isArray(p.images) ? p.images.join(',') : (p.images || '')
+      p.shelfLifeDays ?? '',
+      p.reorderLevel ?? 0,
+      p.reorderQty ?? '',
+      p.maxStock ?? '',
+      p.length ?? '',
+      p.width ?? '',
+      p.height ?? '',
+      p.dimensionUnit || 'cm',
+      p.weight ?? '',
+      p.weightUnit || 'kg',
+      p.packSize ?? 1,
+      Array.isArray(p.images) ? p.images.join(',') : (p.images || ''),
+      p.bestBeforeDateWarningPeriodDays ?? 0,
+      p.DefaultPickingLocation?.code || p.DefaultPickingLocation?.name || '',
+      p.isDiscontinued ? 'yes' : 'no',
+      (p.cartons && p.cartons[0]?.barcode) || '',
+      (p.cartons && p.cartons[0]?.caseSize) || '',
+      (p.cartons && p.cartons[0]?.description) || '',
+      p.marketplaceSkus?.hdSku || '',
+      p.marketplaceSkus?.hdSaleSku || '',
+      p.marketplaceSkus?.warehouseId || '',
+      p.marketplaceSkus?.ebayId || '',
+      p.marketplaceSkus?.amazonSku || '',
+      p.marketplaceSkus?.amazonSkuSplitBefore || '',
+      p.marketplaceSkus?.amazonMpnSku || '',
+      p.marketplaceSkus?.amazonIdSku || ''
     ];
   });
 
@@ -338,11 +369,11 @@ async function createProduct(data, reqUser) {
   return normalizeProductJson(created);
 }
 
-async function bulkCreateProducts(productsArray, reqUser) {
+async function bulkCreateProducts(productsArray, reqUser, explicitCompanyId) {
   if (reqUser.role !== 'super_admin' && reqUser.role !== 'company_admin' && reqUser.role !== 'inventory_manager') {
     throw new Error('Not allowed to import products');
   }
-  const companyId = reqUser.companyId;
+  const companyId = reqUser.companyId || explicitCompanyId;
   if (!companyId) throw new Error('Company required');
   if (!Array.isArray(productsArray) || productsArray.length === 0) {
     throw new Error('No products to import');
@@ -369,8 +400,6 @@ async function bulkCreateProducts(productsArray, reqUser) {
   });
   console.log(`[BULK_IMPORT] CompanyId=${companyId} Found ${existingSuppliers.length} existing suppliers.`);
 
-
-
   for (let i = 0; i < productsArray.length; i++) {
     const data = productsArray[i];
     try {
@@ -383,7 +412,7 @@ async function bulkCreateProducts(productsArray, reqUser) {
 
       // Resolve categoryId (ID or Name)
       let resolvedCategoryId = null;
-      const catInput = data.categoryId != null ? String(data.categoryId).trim() : null;
+      const catInput = data.category != null ? String(data.category).trim() : (data.categoryId != null ? String(data.categoryId).trim() : null);
       if (catInput !== null && catInput !== '') {
         // If it's a numeric ID that already exists
         if (!isNaN(catInput) && categoryIdSet.has(Number(catInput))) {
@@ -411,10 +440,9 @@ async function bulkCreateProducts(productsArray, reqUser) {
         }
       }
 
-
       // Resolve supplierId (ID or Name)
       let resolvedSupplierId = null;
-      const supInput = data.supplierId != null ? String(data.supplierId).trim() : null;
+      const supInput = data.supplier != null ? String(data.supplier).trim() : (data.supplierId != null ? String(data.supplierId).trim() : null);
       if (supInput !== null && supInput !== '') {
         if (!isNaN(supInput) && supplierIdSet.has(Number(supInput))) {
           resolvedSupplierId = Number(supInput);
@@ -434,6 +462,31 @@ async function bulkCreateProducts(productsArray, reqUser) {
             supplierIdSet.add(resolvedSupplierId);
           }
         }
+      }
+
+      // Resolve defaultPickingLocationId
+      let resolvedDefaultPickingLocationId = null;
+      const defaultLocInput = data.defaultPickingLocation != null ? String(data.defaultPickingLocation).trim() : null;
+      if (defaultLocInput !== null && defaultLocInput !== '') {
+        const foundLoc = await Location.findOne({
+          where: {
+            companyId,
+            [Op.or]: [
+              { code: defaultLocInput },
+              { name: defaultLocInput }
+            ]
+          }
+        });
+        if (foundLoc) {
+          resolvedDefaultPickingLocationId = foundLoc.id;
+        } else {
+          console.log(`[BULK_IMPORT] Row ${i + 1}: Default picking location "${defaultLocInput}" not found.`);
+          resolvedDefaultPickingLocationId = null;
+        }
+      } else if (data.defaultPickingLocation === '') {
+        resolvedDefaultPickingLocationId = null;
+      } else {
+        resolvedDefaultPickingLocationId = existing ? existing.defaultPickingLocationId : null;
       }
 
       const productData = {
@@ -487,6 +540,14 @@ async function bulkCreateProducts(productsArray, reqUser) {
         supplierProducts: Array.isArray(data.supplierProducts) ? data.supplierProducts : (existing ? existing.supplierProducts : null),
         alternativeSkus: Array.isArray(data.alternativeSkus) ? data.alternativeSkus : (existing ? existing.alternativeSkus : null),
         bestBeforeDateWarningPeriodDays: data.bestBeforeDateWarningPeriodDays != null ? Number(data.bestBeforeDateWarningPeriodDays) : (existing ? existing.bestBeforeDateWarningPeriodDays : 0),
+        defaultPickingLocationId: resolvedDefaultPickingLocationId,
+        isDiscontinued: (function () {
+          if (data.discontinued != null) {
+            const val = String(data.discontinued).toLowerCase().trim();
+            return val === 'yes' || val === 'true' || val === '1';
+          }
+          return existing ? existing.isDiscontinued : false;
+        })(),
       };
 
       if (existing) {
@@ -501,7 +562,6 @@ async function bulkCreateProducts(productsArray, reqUser) {
     }
   }
   return results;
-
 }
 
 async function updateProduct(id, data, reqUser) {
@@ -854,12 +914,55 @@ async function updateStock(stockId, data, reqUser) {
 }
 
 async function removeStock(stockId, reqUser) {
-  const stock = await ProductStock.findByPk(stockId, { include: ['Product'] });
-  if (!stock) throw new Error('Stock not found');
-  if (reqUser.role !== 'super_admin' && reqUser.role !== 'inventory_manager' && reqUser.role !== 'company_admin') throw new Error('Not allowed');
-  if (stock.Product && stock.Product.companyId !== reqUser.companyId && reqUser.role !== 'super_admin') throw new Error('Stock not found');
-  await stock.destroy();
-  return { message: 'Stock record deleted' };
+  const { ProductStock, Inventory, InventoryLog, sequelize } = require('../models');
+  
+  const transaction = await sequelize.transaction();
+  try {
+    const stock = await ProductStock.findByPk(stockId, { 
+      include: ['Product'],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (!stock) throw new Error('Stock not found');
+    if (reqUser.role !== 'super_admin' && reqUser.role !== 'inventory_manager' && reqUser.role !== 'company_admin') throw new Error('Not allowed');
+    if (stock.Product && stock.Product.companyId !== reqUser.companyId && reqUser.role !== 'super_admin') throw new Error('Stock not found');
+
+    const qty = Number(stock.quantity) || 0;
+    const res = Number(stock.reserved) || 0;
+
+    // Decrement from summary inventory
+    const inv = await Inventory.findOne({
+      where: { productId: stock.productId, warehouseId: stock.warehouseId },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+    if (inv) {
+      if (qty > 0) await inv.decrement('quantity', { by: qty, transaction });
+      if (res > 0) await inv.decrement('reservedQuantity', { by: res, transaction });
+    }
+
+    // Log the change
+    if (qty > 0) {
+      await InventoryLog.create({
+        productId: stock.productId,
+        warehouseId: stock.warehouseId,
+        locationId: stock.locationId,
+        clientId: stock.clientId,
+        type: 'OUT',
+        quantity: -qty,
+        reason: 'Stock Record Deleted',
+        userId: reqUser.id
+      }, { transaction });
+    }
+
+    await stock.destroy({ transaction });
+
+    await transaction.commit();
+    return { message: 'Stock record deleted' };
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  }
 }
 
 async function listStockByBestBeforeDate(reqUser, query = {}) {
@@ -1910,8 +2013,11 @@ async function listInventoryLedger(reqUser, query = {}) {
 
   // Event type filter
   if (query.eventType && query.eventType !== 'all') {
-    if (['IN', 'OUT', 'TRANSFER', 'ALLOCATE', 'DEALLOCATE'].includes(query.eventType)) {
-      where.type = query.eventType;
+    const selectedTypes = String(query.eventType).split(',').map(t => t.trim());
+    const validStandardTypes = selectedTypes.filter(t => ['IN', 'OUT', 'TRANSFER', 'ALLOCATE', 'DEALLOCATE'].includes(t));
+    
+    if (validStandardTypes.length > 0) {
+      where.type = { [Op.in]: validStandardTypes };
     } else if (query.eventType === 'Shipments') {
       where.type = 'OUT';
       where.reason = { [Op.or]: [
@@ -2275,29 +2381,72 @@ async function stockIn(data, reqUser) {
 }
 
 async function stockOut(data, reqUser) {
-  const { Inventory, InventoryLog } = require('../models');
+  const { Inventory, InventoryLog, ProductStock } = require('../models');
   const { productId, warehouseId, quantity, referenceId } = data;
 
-  const inventory = await Inventory.findOne({
-    where: { productId, warehouseId }
-  });
+  const transaction = await sequelize.transaction();
+  try {
+    const inventory = await Inventory.findOne({
+      where: { productId, warehouseId },
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
 
-  const available = (inventory.quantity || 0) - (inventory.reservedQuantity || 0);
-  if (!inventory || available < quantity) {
-    throw new Error(`Insufficient available stock. Total: ${inventory.quantity}, Reserved: ${inventory.reservedQuantity}, Available: ${available}`);
+    if (!inventory) {
+      throw new Error('Inventory record not found');
+    }
+
+    const available = (inventory.quantity || 0) - (inventory.reservedQuantity || 0);
+    if (available < quantity) {
+      throw new Error(`Insufficient available stock. Total: ${inventory.quantity}, Reserved: ${inventory.reservedQuantity}, Available: ${available}`);
+    }
+
+    // Deduct from ProductStock rows (FIFO)
+    const stockRows = await ProductStock.findAll({
+      where: { 
+        productId, 
+        warehouseId, 
+        quantity: { [Op.gt]: 0 } 
+      },
+      order: [['createdAt', 'ASC']],
+      transaction,
+      lock: transaction.LOCK.UPDATE
+    });
+
+    let remaining = quantity;
+    for (const row of stockRows) {
+      if (remaining <= 0) break;
+      const rowQty = Number(row.quantity);
+      const toDeduct = Math.min(rowQty, remaining);
+      await row.decrement('quantity', { by: toDeduct, transaction });
+      
+      // Auto-delete zero-quantity rows so ghost records don't linger
+      await row.reload({ transaction });
+      if ((Number(row.quantity) || 0) <= 0) {
+        await row.destroy({ transaction });
+      }
+      
+      remaining -= toDeduct;
+    }
+
+    await inventory.decrement('quantity', { by: quantity, transaction });
+
+    await InventoryLog.create({
+      productId,
+      warehouseId,
+      type: 'OUT',
+      quantity: -quantity, // Represent stock out as a negative quantity in the log
+      referenceId,
+      reason: 'Manual Stock Out',
+      userId: reqUser.id
+    }, { transaction });
+
+    await transaction.commit();
+    return inventory.reload();
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
   }
-
-  await inventory.decrement('quantity', { by: quantity });
-
-  await InventoryLog.create({
-    productId,
-    warehouseId,
-    type: 'OUT',
-    quantity,
-    referenceId
-  });
-
-  return inventory.reload();
 }
 
 async function transferStock(data, reqUser) {

@@ -1,0 +1,67 @@
+--- RUNNING SELF-HEALING / DATABASE REPAIR OF DRIFTED INVENTORY ---
+Repaired Product ID 90 (6767):
+  Old Inventory Table: Qty = 34, Reserved = 0
+  New Repaired:        Qty = 32.994, Reserved = 1
+Repaired Product ID 90 (6767):
+  Old Inventory Table: Qty = 20, Reserved = 0
+  New Repaired:        Qty = 58, Reserved = 0
+Repaired Product ID 105 (bff):
+  Old Inventory Table: Qty = 0, Reserved = 0
+  New Repaired:        Qty = 11, Reserved = 0
+Repaired Product ID 101 (23232323323232):
+  Old Inventory Table: Qty = 1, Reserved = 0
+  New Repaired:        Qty = 2, Reserved = 0
+Repaired Product ID 113 (1234):
+  Old Inventory Table: Qty = 1, Reserved = 1
+  New Repaired:        Qty = 1, Reserved = 2
+Repaired Product ID 106 (JSON-SKU-1773909832942):
+  Old Inventory Table: Qty = 1, Reserved = 1
+  New Repaired:        Qty = 4, Reserved = 2
+Repaired Product ID 107 (prd001):
+  Old Inventory Table: Qty = 148, Reserved = 11
+  New Repaired:        Qty = 53, Reserved = 2
+Repaired Product ID 110 (SKU-001):
+  Old Inventory Table: Qty = 1000, Reserved = 11
+  New Repaired:        Qty = 1000, Reserved = 22
+Repaired Product ID 107 (prd001):
+  Old Inventory Table: Qty = 99, Reserved = 2
+  New Repaired:        Qty = 99, Reserved = 5
+Repaired Product ID 112 (SKU-003):
+  Old Inventory Table: Qty = 1, Reserved = 1
+  New Repaired:        Qty = 5, Reserved = 2
+Repaired Product ID 98 (676712):
+  Old Inventory Table: Qty = 0, Reserved = 1
+  New Repaired:        Qty = 19.048, Reserved = 2
+Total inventory rows repaired: 11
+
+--- RECENT INVENTORY LOGS ---
+ID: 56 | Date: Wed Jun 10 2026 15:16:35 GMT+0530 (India Standard Time) | SKU: SKU-003 | Type: OUT | Qty: -1 | Ref: ORD-1780899592303-0021 | NewStock: 1 | NewAlloc: 1 | NewOnHand: 0
+ID: 55 | Date: Wed Jun 10 2026 11:48:31 GMT+0530 (India Standard Time) | SKU: 1234 | Type: OUT | Qty: -1 | Ref: ORD-1780899437826-0020 | NewStock: 1 | NewAlloc: 1 | NewOnHand: 0
+ID: 54 | Date: Mon Jun 08 2026 11:50:02 GMT+0530 (India Standard Time) | SKU: SKU-003 | Type: DEALLOCATE | Qty: -1 | Ref: ORD-1780899592303-0021 | NewStock: 2 | NewAlloc: 2 | NewOnHand: 0
+ID: 53 | Date: Mon Jun 08 2026 11:49:52 GMT+0530 (India Standard Time) | SKU: SKU-003 | Type: ALLOCATE | Qty: 1 | Ref: ORD-1780899592303-0021 | NewStock: 2 | NewAlloc: 3 | NewOnHand: 0
+ID: 52 | Date: Mon Jun 08 2026 11:47:17 GMT+0530 (India Standard Time) | SKU: 1234 | Type: ALLOCATE | Qty: 1 | Ref: ORD-1780899437826-0020 | NewStock: 2 | NewAlloc: 2 | NewOnHand: 0
+ID: 51 | Date: Sat Jun 06 2026 15:32:18 GMT+0530 (India Standard Time) | SKU: SKU-003 | Type: ALLOCATE | Qty: 1 | Ref: ORD-1780740138507-0017 | NewStock: 2 | NewAlloc: 2 | NewOnHand: 0
+ID: 50 | Date: Sat Jun 06 2026 14:48:29 GMT+0530 (India Standard Time) | SKU: 1234 | Type: ALLOCATE | Qty: 1 | Ref: ORD-1780737509551-0016 | NewStock: 2 | NewAlloc: 1 | NewOnHand: 1
+ID: 47 | Date: Fri May 29 2026 16:27:40 GMT+0530 (India Standard Time) | SKU: prd001 | Type: IN | Qty: 5 | Ref: GRN011 | NewStock: 148 | NewAlloc: 11 | NewOnHand: 137
+ID: 46 | Date: Fri May 29 2026 16:26:58 GMT+0530 (India Standard Time) | SKU: ss | Type: IN | Qty: 5 | Ref: GRN010 | NewStock: 18 | NewAlloc: 0 | NewOnHand: 18
+ID: 38 | Date: Fri May 29 2026 15:50:34 GMT+0530 (India Standard Time) | SKU: ss | Type: IN | Qty: 3 | Ref: GRN003 | NewStock: 18 | NewAlloc: 0 | NewOnHand: 18
+ID: 37 | Date: Fri May 29 2026 14:52:56 GMT+0530 (India Standard Time) | SKU: ss | Type: IN | Qty: 10 | Ref: GRN010 | NewStock: 18 | NewAlloc: 0 | NewOnHand: 18
+ID: 36 | Date: Fri May 22 2026 13:19:44 GMT+0530 (India Standard Time) | SKU: JSON-SKU-1773909832942 | Type: OUT | Qty: 1 | Ref: ADJ-BXBNBWN6 | NewStock: 1 | NewAlloc: 1 | NewOnHand: 0
+ID: 35 | Date: Fri May 22 2026 13:18:50 GMT+0530 (India Standard Time) | SKU: JSON-SKU-1773909832942 | Type: OUT | Qty: 1 | Ref: ADJ-BXBNBWJ0 | NewStock: 1 | NewAlloc: 1 | NewOnHand: 0
+ID: 34 | Date: Tue May 19 2026 17:33:01 GMT+0530 (India Standard Time) | SKU: SKU-003 | Type: IN | Qty: 2 | Ref: BULK-BXBJBDM1 | NewStock: 2 | NewAlloc: 1 | NewOnHand: 1
+ID: 33 | Date: Tue May 19 2026 17:33:01 GMT+0530 (India Standard Time) | SKU: 1234 | Type: IN | Qty: 1 | Ref: BULK-BXBJBDM1 | NewStock: 2 | NewAlloc: 0 | NewOnHand: 2
+ID: 32 | Date: Wed May 13 2026 12:54:22 GMT+0530 (India Standard Time) | SKU: JSON-SKU-1773909832942 | Type: IN | Qty: 1 | Ref: ADJ-BXAZCWHV | NewStock: 1 | NewAlloc: 1 | NewOnHand: 0
+ID: 31 | Date: Sat May 09 2026 12:34:24 GMT+0530 (India Standard Time) | SKU: ss | Type: IN | Qty: 1 | Ref: GRN004 | NewStock: 1 | NewAlloc: 0 | NewOnHand: 1
+ID: 30 | Date: Thu May 07 2026 14:31:42 GMT+0530 (India Standard Time) | SKU: prd001 | Type: OUT | Qty: -1 | Ref: ORD-1777716976523-0012 | NewStock: 99 | NewAlloc: 2 | NewOnHand: 97
+ID: 29 | Date: Sat May 02 2026 16:20:10 GMT+0530 (India Standard Time) | SKU: prd001 | Type: OUT | Qty: -10 | Ref: ORD-1777718424291-0013 | NewStock: 2 | NewAlloc: 0 | NewOnHand: 2
+ID: 28 | Date: Sat May 02 2026 16:00:34 GMT+0530 (India Standard Time) | SKU: 6767 | Type: OUT | Qty: -10 | Ref: ORD-1777636504789-0005 | NewStock: 34 | NewAlloc: 0 | NewOnHand: 34
+ID: 27 | Date: Sat May 02 2026 15:34:20 GMT+0530 (India Standard Time) | SKU: prd001 | Type: IN | Qty: 6 | Ref: GRN008 | NewStock: 148 | NewAlloc: 11 | NewOnHand: 137
+ID: 26 | Date: Sat May 02 2026 15:31:52 GMT+0530 (India Standard Time) | SKU: prd001 | Type: IN | Qty: 40 | Ref: GRN007 | NewStock: 148 | NewAlloc: 11 | NewOnHand: 137
+ID: 25 | Date: Sat May 02 2026 15:28:23 GMT+0530 (India Standard Time) | SKU: prd001 | Type: IN | Qty: 12 | Ref: GRN006 | NewStock: 2 | NewAlloc: 0 | NewOnHand: 2
+ID: 24 | Date: Fri May 01 2026 18:16:01 GMT+0530 (India Standard Time) | SKU: 6767 | Type: OUT | Qty: -1 | Ref: SHIP:11 | NewStock: 34 | NewAlloc: 0 | NewOnHand: 34
+ID: 23 | Date: Fri May 01 2026 18:13:26 GMT+0530 (India Standard Time) | SKU: prd001 | Type: IN | Qty: 2 | Ref: GRN005 | NewStock: 148 | NewAlloc: 11 | NewOnHand: 137
+ID: 22 | Date: Fri May 01 2026 18:06:39 GMT+0530 (India Standard Time) | SKU: prd001 | Type: IN | Qty: 100 | Ref: ADJ-BW9TD2QY | NewStock: 99 | NewAlloc: 2 | NewOnHand: 97
+ID: 21 | Date: Fri May 01 2026 17:59:56 GMT+0530 (India Standard Time) | SKU: SKU-001 | Type: IN | Qty: 1000 | Ref: ADJ-BW9TDZRM | NewStock: 1000 | NewAlloc: 11 | NewOnHand: 989
+ID: 20 | Date: Fri May 01 2026 16:58:57 GMT+0530 (India Standard Time) | SKU: 6767 | Type: OUT | Qty: -1 | Ref: SHIP:10 | NewStock: 34 | NewAlloc: 0 | NewOnHand: 34
+ID: 19 | Date: Fri May 01 2026 16:58:52 GMT+0530 (India Standard Time) | SKU: 6767 | Type: OUT | Qty: -1 | Ref: SHIP:10 | NewStock: 34 | NewAlloc: 0 | NewOnHand: 34
+ID: 18 | Date: Fri May 01 2026 16:58:43 GMT+0530 (India Standard Time) | SKU: 6767 | Type: OUT | Qty: -1 | Ref: SHIP:10 | NewStock: 34 | NewAlloc: 0 | NewOnHand: 34
