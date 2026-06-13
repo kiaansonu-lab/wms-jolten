@@ -28,9 +28,9 @@ function normalizeProductJson(p) {
   if (out.height != null && out.height !== '') out.height = Number(out.height);
   if (out.weight != null && out.weight !== '') out.weight = Number(out.weight);
   if (typeof out.images === 'string') {
-    try { 
-      out.images = JSON.parse(out.images); 
-    } catch (_) { 
+    try {
+      out.images = JSON.parse(out.images);
+    } catch (_) {
       // If it's not JSON, treat it as a comma-separated string or a single URL
       if (out.images.trim()) {
         out.images = out.images.split(',').map(u => u.trim()).filter(Boolean);
@@ -470,12 +470,16 @@ async function bulkCreateProducts(productsArray, reqUser, explicitCompanyId) {
       if (defaultLocInput !== null && defaultLocInput !== '') {
         const foundLoc = await Location.findOne({
           where: {
-            companyId,
             [Op.or]: [
               { code: defaultLocInput },
               { name: defaultLocInput }
             ]
-          }
+          },
+          include: [{
+            association: 'Zone',
+            where: { companyId },
+            required: true
+          }]
         });
         if (foundLoc) {
           resolvedDefaultPickingLocationId = foundLoc.id;
@@ -686,8 +690,8 @@ async function removeProduct(id, reqUser) {
   } catch (err) {
     const errMsg = (err.message || '').toLowerCase();
     if (
-      err.name === 'SequelizeForeignKeyConstraintError' || 
-      errMsg.includes('foreign key') || 
+      err.name === 'SequelizeForeignKeyConstraintError' ||
+      errMsg.includes('foreign key') ||
       errMsg.includes('parent row') ||
       errMsg.includes('constraint')
     ) {
@@ -785,7 +789,7 @@ async function createStock(data, reqUser) {
     };
 
     let stock = await ProductStock.findOne({ where: stockWhere, transaction });
-    
+
     if (stock) {
       await stock.update({
         quantity: (Number(stock.quantity) || 0) + quantity,
@@ -915,10 +919,10 @@ async function updateStock(stockId, data, reqUser) {
 
 async function removeStock(stockId, reqUser) {
   const { ProductStock, Inventory, InventoryLog, sequelize } = require('../models');
-  
+
   const transaction = await sequelize.transaction();
   try {
-    const stock = await ProductStock.findByPk(stockId, { 
+    const stock = await ProductStock.findByPk(stockId, {
       include: ['Product'],
       transaction,
       lock: transaction.LOCK.UPDATE
@@ -2011,41 +2015,52 @@ async function listInventoryLedger(reqUser, query = {}) {
     where.warehouseId = query.warehouseId;
   }
 
+  // Client filter
+  if (query.clientId) {
+    where.clientId = query.clientId;
+  }
+
   // Event type filter
   if (query.eventType && query.eventType !== 'all') {
     const selectedTypes = String(query.eventType).split(',').map(t => t.trim());
     const validStandardTypes = selectedTypes.filter(t => ['IN', 'OUT', 'TRANSFER', 'ALLOCATE', 'DEALLOCATE'].includes(t));
-    
+
     if (validStandardTypes.length > 0) {
       where.type = { [Op.in]: validStandardTypes };
     } else if (query.eventType === 'Shipments') {
       where.type = 'OUT';
-      where.reason = { [Op.or]: [
-        { [Op.like]: '%Shipment%' },
-        { [Op.like]: '%Sales Order%' },
-        { [Op.like]: '%Scan Out%' }
-      ]};
+      where.reason = {
+        [Op.or]: [
+          { [Op.like]: '%Shipment%' },
+          { [Op.like]: '%Sales Order%' },
+          { [Op.like]: '%Scan Out%' }
+        ]
+      };
     } else if (query.eventType === 'Receipts') {
       where.type = 'IN';
-      where.reason = { [Op.or]: [
-        { [Op.like]: '%Receipt%' },
-        { [Op.like]: '%Purchase Order%' },
-        { [Op.like]: '%ASN%' },
-        { [Op.like]: '%Goods%' },
-        { [Op.like]: '%Scan In%' },
-        { [Op.like]: '%Manual Stock Creation%' },
-        { [Op.like]: '%Batch Creation%' }
-      ]};
+      where.reason = {
+        [Op.or]: [
+          { [Op.like]: '%Receipt%' },
+          { [Op.like]: '%Purchase Order%' },
+          { [Op.like]: '%ASN%' },
+          { [Op.like]: '%Goods%' },
+          { [Op.like]: '%Scan In%' },
+          { [Op.like]: '%Manual Stock Creation%' },
+          { [Op.like]: '%Batch Creation%' }
+        ]
+      };
     } else if (query.eventType === 'WhseTransfers') {
       where.type = 'TRANSFER';
     } else if (query.eventType === 'Adjustments') {
-      where.reason = { [Op.or]: [
-        { [Op.like]: '%Adjustment%' },
-        { [Op.like]: '%Cycle Count%' },
-        { [Op.like]: '%Correction%' },
-        { [Op.like]: '%Manual Stock%' },
-        { [Op.like]: '%Bulk%' }
-      ]};
+      where.reason = {
+        [Op.or]: [
+          { [Op.like]: '%Adjustment%' },
+          { [Op.like]: '%Cycle Count%' },
+          { [Op.like]: '%Correction%' },
+          { [Op.like]: '%Manual Stock%' },
+          { [Op.like]: '%Bulk%' }
+        ]
+      };
     } else if (query.eventType === 'CustomerReturns') {
       where.reason = {
         [Op.and]: [
@@ -2199,7 +2214,7 @@ async function listInventoryLedger(reqUser, query = {}) {
   const items = rows.map(l => {
     const j = l.get({ plain: true });
     j.createdBy = j.User;
-    
+
     if (j.type === 'TRANSFER' && j.referenceId) {
       const m = String(j.referenceId).match(/TRANSFER:\s*(\d+):(\d+)\s*->\s*(\d+):(\d+)/i);
       if (m) {
@@ -2207,14 +2222,14 @@ async function listInventoryLedger(reqUser, query = {}) {
         const fromLocId = Number(m[2]);
         const toWhId = Number(m[3]);
         const toLocId = Number(m[4]);
-        
+
         j.fromWarehouse = warehousesMap[fromWhId] || { id: fromWhId, name: `Warehouse ${fromWhId}`, code: `WH-${fromWhId}` };
         j.fromLocation = locationsMap[fromLocId] || { id: fromLocId, name: `Bin ${fromLocId}`, code: `BIN-${fromLocId}` };
         j.toWarehouse = warehousesMap[toWhId] || { id: toWhId, name: `Warehouse ${toWhId}`, code: `WH-${toWhId}` };
         j.toLocation = locationsMap[toLocId] || { id: toLocId, name: `Bin ${toLocId}`, code: `BIN-${toLocId}` };
       }
     }
-    
+
     // Determine Event Type
     let eventType = 'Adjustments';
     const reasonLower = (j.reason || '').toLowerCase();
@@ -2227,9 +2242,9 @@ async function listInventoryLedger(reqUser, query = {}) {
         eventType = 'CustomerReturns';
       }
     } else if (j.type === 'IN' && (
-      reasonLower.includes('receipt') || 
-      reasonLower.includes('purchase order') || 
-      reasonLower.includes('goods') || 
+      reasonLower.includes('receipt') ||
+      reasonLower.includes('purchase order') ||
+      reasonLower.includes('goods') ||
       reasonLower.includes('asn') ||
       reasonLower.includes('scan in') ||
       reasonLower.includes('manual stock creation') ||
@@ -2237,8 +2252,8 @@ async function listInventoryLedger(reqUser, query = {}) {
     )) {
       eventType = 'Receipts';
     } else if (j.type === 'OUT' && (
-      reasonLower.includes('shipment') || 
-      reasonLower.includes('sales order') || 
+      reasonLower.includes('shipment') ||
+      reasonLower.includes('sales order') ||
       reasonLower.includes('scan out')
     )) {
       eventType = 'Shipments';
@@ -2337,7 +2352,7 @@ async function stockIn(data, reqUser) {
     };
 
     let stock = await ProductStock.findOne({ where: stockWhere, transaction });
-    
+
     if (stock) {
       await stock.update({
         quantity: (Number(stock.quantity) || 0) + Number(quantity)
@@ -2403,10 +2418,10 @@ async function stockOut(data, reqUser) {
 
     // Deduct from ProductStock rows (FIFO)
     const stockRows = await ProductStock.findAll({
-      where: { 
-        productId, 
-        warehouseId, 
-        quantity: { [Op.gt]: 0 } 
+      where: {
+        productId,
+        warehouseId,
+        quantity: { [Op.gt]: 0 }
       },
       order: [['createdAt', 'ASC']],
       transaction,
@@ -2419,13 +2434,13 @@ async function stockOut(data, reqUser) {
       const rowQty = Number(row.quantity);
       const toDeduct = Math.min(rowQty, remaining);
       await row.decrement('quantity', { by: toDeduct, transaction });
-      
+
       // Auto-delete zero-quantity rows so ghost records don't linger
       await row.reload({ transaction });
       if ((Number(row.quantity) || 0) <= 0) {
         await row.destroy({ transaction });
       }
-      
+
       remaining -= toDeduct;
     }
 
@@ -2484,7 +2499,7 @@ async function transferStock(data, reqUser) {
   if (isTruthyYes(product.requireBatchTracking) && !normalizedBatch) {
     const sourceBatch = sourceStockCheck?.batchNumber;
     const hasSourceBatch = sourceBatch && String(sourceBatch).trim() !== '' && String(sourceBatch).toLowerCase() !== 'null';
-    
+
     if (hasSourceBatch) {
       throw new Error(`${product.name || 'This product'} requires a Batch Number for this transfer because the source stock has one.`);
     }
@@ -2564,12 +2579,12 @@ async function transferStock(data, reqUser) {
       const rowQty = Number(row.quantity) || 0;
       if (rowQty <= 0) continue;
       const consume = Math.min(rowQty, remaining);
-      
+
       // Safe subtraction in-memory & save instead of DB expression reload
       const newQty = Math.max(0, rowQty - consume);
       row.quantity = newQty;
       await row.save({ transaction: t });
-      
+
       // Auto-delete zero-quantity source rows after transfer
       if (newQty <= 0) {
         await row.destroy({ transaction: t });
@@ -2891,7 +2906,7 @@ async function bulkImportStock(stocksArray, reqUser) {
   const products = await Product.findAll({ where: { companyId } });
   const warehouses = await Warehouse.findAll({ where: { companyId } });
   const customers = await Customer.findAll({ where: { companyId } });
-  
+
   const zones = await Zone.findAll({ where: { companyId } });
   const zoneIds = zones.map(z => z.id);
   const locations = await Location.findAll({
@@ -3135,7 +3150,7 @@ async function bulkActionProducts(action, productIds, reqUser) {
     let deletedCount = 0;
     let deactivatedCount = 0;
     const products = await Product.findAll({ where: whereClause });
-    
+
     for (const product of products) {
       try {
         await sequelize.transaction(async (t) => {

@@ -32,9 +32,13 @@ const InventoryLog = sequelize.define('InventoryLog', {
       try {
         const { ProductStock, OrderItem, SalesOrder, Inventory } = log.sequelize.models;
 
-        // 1. Calculate physical stock levels from ProductStock
+        // 1. Calculate physical stock levels from ProductStock (client-specific if clientId is set)
+        const psWhere = { productId: log.productId, warehouseId: log.warehouseId };
+        if (log.clientId) {
+          psWhere.clientId = log.clientId;
+        }
         const psResult = await ProductStock.findOne({
-          where: { productId: log.productId, warehouseId: log.warehouseId },
+          where: psWhere,
           attributes: [
             [log.sequelize.fn('SUM', log.sequelize.col('quantity')), 'totalQty'],
             [log.sequelize.fn('SUM', log.sequelize.col('reserved')), 'totalReserved']
@@ -46,7 +50,13 @@ const InventoryLog = sequelize.define('InventoryLog', {
         const physicalQty = Number(psResult?.totalQty) || 0;
         const hardReserved = Number(psResult?.totalReserved) || 0;
 
-        // 2. Calculate soft reservations from OrderItems for active orders
+        // 2. Calculate soft reservations from OrderItems for active orders (client-specific if clientId is set)
+        const orderWhere = {
+          status: ['DRAFT', 'CONFIRMED', 'BACKORDER', 'PICKING_IN_PROGRESS', 'PICKED', 'PACKING_IN_PROGRESS', 'PACKED']
+        };
+        if (log.clientId) {
+          orderWhere.customerId = log.clientId;
+        }
         const softResult = await OrderItem.findOne({
           where: {
             productId: log.productId,
@@ -56,9 +66,7 @@ const InventoryLog = sequelize.define('InventoryLog', {
           include: [{
             model: SalesOrder,
             as: 'SalesOrder',
-            where: {
-              status: ['DRAFT', 'CONFIRMED', 'BACKORDER', 'PICKING_IN_PROGRESS', 'PICKED', 'PACKING_IN_PROGRESS', 'PACKED']
-            },
+            where: orderWhere,
             attributes: []
           }],
           attributes: [
@@ -70,7 +78,7 @@ const InventoryLog = sequelize.define('InventoryLog', {
 
         const softReserved = Number(softResult?.totalSoftReserved) || 0;
 
-        // 3. Determine the final physical and reserved levels
+        // 3. Determine the final physical and reserved levels (for the log)
         let finalPhysical = physicalQty;
         let finalReserved = hardReserved + softReserved;
 
@@ -86,16 +94,60 @@ const InventoryLog = sequelize.define('InventoryLog', {
         finalReserved = Math.max(0, finalReserved);
         const finalOnHand = Math.max(0, finalPhysical - finalReserved);
 
-        // 5. Update/Heal summary Inventory table
+        // 5. Update/Heal summary Inventory table (always overall across all clients)
         if (Inventory) {
+          const overallPsResult = await ProductStock.findOne({
+            where: { productId: log.productId, warehouseId: log.warehouseId },
+            attributes: [
+              [log.sequelize.fn('SUM', log.sequelize.col('quantity')), 'totalQty'],
+              [log.sequelize.fn('SUM', log.sequelize.col('reserved')), 'totalReserved']
+            ],
+            raw: true,
+            transaction: options.transaction
+          });
+          const overallPhysicalQty = Number(overallPsResult?.totalQty) || 0;
+          const overallHardReserved = Number(overallPsResult?.totalReserved) || 0;
+
+          const overallSoftResult = await OrderItem.findOne({
+            where: {
+              productId: log.productId,
+              warehouseId: log.warehouseId,
+              locationId: null
+            },
+            include: [{
+              model: SalesOrder,
+              as: 'SalesOrder',
+              where: {
+                status: ['DRAFT', 'CONFIRMED', 'BACKORDER', 'PICKING_IN_PROGRESS', 'PICKED', 'PACKING_IN_PROGRESS', 'PACKED']
+              },
+              attributes: []
+            }],
+            attributes: [
+              [log.sequelize.fn('SUM', log.sequelize.col('quantity')), 'totalSoftReserved']
+            ],
+            raw: true,
+            transaction: options.transaction
+          });
+          const overallSoftReserved = Number(overallSoftResult?.totalSoftReserved) || 0;
+
+          let overallPhysical = overallPhysicalQty;
+          let overallReserved = overallHardReserved + overallSoftReserved;
+
+          if (log.type === 'ALLOCATE' || log.type === 'DEALLOCATE') {
+            overallReserved += Number(log.quantity) || 0;
+          }
+
+          overallPhysical = Math.max(0, overallPhysical);
+          overallReserved = Math.max(0, overallReserved);
+
           const [inv] = await Inventory.findOrCreate({
             where: { productId: log.productId, warehouseId: log.warehouseId },
-            defaults: { quantity: finalPhysical, reservedQuantity: finalReserved },
+            defaults: { quantity: overallPhysical, reservedQuantity: overallReserved },
             transaction: options.transaction
           });
           await inv.update({
-            quantity: finalPhysical,
-            reservedQuantity: finalReserved
+            quantity: overallPhysical,
+            reservedQuantity: overallReserved
           }, { 
             transaction: options.transaction,
             silent: true 
